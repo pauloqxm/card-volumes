@@ -2,7 +2,11 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  FIX: fonte size=0 (Pillow não aceita)
+#  Ajustes visuais
+#  - KPI em cards melhores
+#  - Subiu/Desceu => Com aporte / Sem aporte
+#  - Comparativo com data inicial -> data final
+#  - Bacia em pílula separada com retângulo
 # =============================================================
 
 import streamlit as st
@@ -29,7 +33,6 @@ TZ_FORTALEZA = ZoneInfo("America/Fortaleza")
 # Fontes
 # -----------------------------
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    # FIX: Pillow não aceita size 0 ou negativo
     size = int(size) if size is not None else 14
     if size < 1:
         size = 1
@@ -309,7 +312,7 @@ def build_fonte_gerencia(df: pd.DataFrame) -> str:
 def build_bacia_label(df: pd.DataFrame) -> str:
     uniques = [b for b in df.get("bacia", pd.Series([])).dropna().astype(str).str.strip().unique().tolist() if b]
     if not uniques:
-        return "Bacia: N/A"
+        return "N/A"
     if len(uniques) == 1:
         return uniques[0]
     if len(uniques) <= 3:
@@ -317,25 +320,55 @@ def build_bacia_label(df: pd.DataFrame) -> str:
     return " / ".join(uniques[:3]) + f" / +{len(uniques) - 3}"
 
 
-def draw_kpis(draw: ImageDraw.ImageDraw, x: int, y: int, total: int, up: int, down: int,
-              big: bool):
-    bg = (241, 245, 249, 255)
-    bd = (148, 163, 184, 255)
-    tx = (15, 23, 42)
+# -----------------------------
+# KPI melhorado
+# -----------------------------
+def draw_kpi_card(draw, x, y, w, h, title, value, accent, big=False):
+    bg = (248, 250, 252, 255)
+    bd = (203, 213, 225, 255)
+    text = (15, 23, 42, 255)
+    sub = (71, 85, 105, 255)
 
-    w = 260 if big else 220
-    h = 58 if big else 46
-    gap = 14
+    r = 18 if big else 16
+    draw_rounded_rect(draw, x, y, w, h, r, fill=bg, outline=bd, width=2)
 
-    f_lab = get_font(20 if big else 16, True)
-    f_val = get_font(28 if big else 22, True)
+    # Faixa/acento no topo
+    draw_rounded_rect(draw, x + 10, y + 10, w - 20, 8, 6, fill=accent, outline=None, width=0)
 
-    items = [("Total", total), ("Subiram", up), ("Desceram", down)]
-    for i, (lab, val) in enumerate(items):
-        cx = x + i * (w + gap)
-        draw_rounded_rect(draw, cx, y, w, h, 18, fill=bg, outline=bd, width=2)
-        draw.text((cx + 16, y + 10), lab, fill=tx, font=f_lab)
-        draw.text((cx + w - 16, y + 8), str(val), fill=tx, font=f_val, anchor="ra")
+    f_t = get_font(20 if big else 16, True)
+    f_v = get_font(38 if big else 30, True)
+
+    draw.text((x + 16, y + 22), title, fill=sub, font=f_t)
+    draw.text((x + w - 16, y + 16), str(value), fill=text, font=f_v, anchor="ra")
+
+
+def draw_kpis(draw, x, y, total, up, down, big=False):
+    gap = 16
+    w = 300 if big else 280
+    h = 92 if big else 78
+
+    accent_total = (56, 189, 248, 255)  # azul
+    accent_up = (16, 185, 129, 255)     # verde
+    accent_down = (244, 63, 94, 255)    # vermelho
+
+    draw_kpi_card(draw, x + 0 * (w + gap), y, w, h, "Total", total, accent_total, big)
+    draw_kpi_card(draw, x + 1 * (w + gap), y, w, h, "Com aporte", up, accent_up, big)
+    draw_kpi_card(draw, x + 2 * (w + gap), y, w, h, "Sem aporte", down, accent_down, big)
+
+    return y + h
+
+
+def draw_badge(draw, x, y, label, value, outline, text_color, big=False):
+    f = get_font(22 if big else 20, True)
+    pad_x = 16
+    pad_y = 10
+    text = f"{label} {value}"
+    tw = text_width(draw, text, f)
+    w = tw + pad_x * 2
+    h = (44 if big else 40)
+    draw_rounded_rect(draw, x, y, w, h, 18, fill=(255, 255, 255, 255), outline=outline, width=3)
+    draw.text((x + pad_x, y + (10 if big else 9)), text, fill=text_color, font=f)
+    return x + w + 14
 
 
 # -----------------------------
@@ -368,8 +401,8 @@ def generate_image(
         big = True
         cols_grid, rows_grid = 2, 9
 
-    dark = (15, 23, 42)
-    gray = (71, 85, 105)
+    dark = (15, 23, 42, 255)
+    gray = (71, 85, 105, 255)
 
     green_bg = (220, 252, 231, 255)
     green_bd = (16, 185, 129, 255)
@@ -383,9 +416,7 @@ def generate_image(
     neutral_bd = (148, 163, 184, 255)
     neutral_tx = (51, 65, 85, 255)
 
-    # FIX: só cria título no Stories. No Feed não usa
     f_sub = get_font(34 if big else 28, False)
-    f_legend = get_font(28 if big else 24, True)
 
     f_name_pos_base = 22 if big else 18
     f_line_pos_base = 17 if big else 15
@@ -410,36 +441,40 @@ def generate_image(
         y += 92
 
     if not big:
-        # feed encaixa dentro do layout
         y = 150
 
-    if str(date_anterior).strip() and str(date_atual).strip():
-        period_text = f"Comparativo {bacia_txt}  {date_anterior} até {date_atual}"
-    elif str(date_atual).strip():
-        period_text = f"Comparativo {bacia_txt}  referência {date_atual}"
-    else:
-        period_text = f"Comparativo {bacia_txt}"
+    # Comparativo com data inicial -> data final (como antes)
+    comparativo = f"Comparativo  {date_anterior}  →  {date_atual}"
+    draw.text((pad, y), comparativo, fill=gray, font=f_sub)
 
-    draw.text((pad, y), period_text, fill=gray, font=f_sub)
-    y += 56 if big else 52
+    # Bacia em retângulo/pílula separada ao lado
+    bx = pad + (720 if big else 680)
+    by = y - (4 if big else 2)
 
-    draw_kpis(draw, pad, y, total=total, up=up, down=down, big=big)
-    y += (86 if big else 72)
+    # se ficar apertado, joga pra linha de baixo no stories
+    if bx > W - pad - 200:
+        bx = pad
+        by = y + (50 if big else 46)
 
-    chip_y = y
-    chip_h = 46 if big else 40
+    x_after = draw_badge(
+        draw,
+        bx,
+        by,
+        "Bacia:",
+        bacia_txt,
+        outline=(147, 197, 253, 255),
+        text_color=(30, 64, 175, 255),
+        big=big
+    )
 
-    draw_rounded_rect(draw, pad, chip_y, 260 if big else 230, chip_h, 18, fill=green_bg, outline=green_bd, width=2)
-    draw_arrow(draw, pad + 16, chip_y + 10, True, 24 if big else 22, green_tx)
-    draw.text((pad + 52, chip_y + 8), "Subiu", fill=green_tx, font=f_legend)
+    y += 64 if big else 56
 
-    draw_rounded_rect(draw, pad + (280 if big else 245), chip_y, 260 if big else 230, chip_h, 18, fill=red_bg, outline=red_bd, width=2)
-    draw_arrow(draw, pad + (296 if big else 261), chip_y + 10, False, 24 if big else 22, red_tx)
-    draw.text((pad + (332 if big else 291), chip_y + 8), "Desceu", fill=red_tx, font=f_legend)
+    # KPIs melhorados
+    y = draw_kpis(draw, pad, y, total=total, up=up, down=down, big=big) + 18
 
-    y = chip_y + chip_h + 18
+    # linha separadora
     draw.line((pad, y, W - pad, y), fill=(226, 232, 240, 255), width=3)
-    y += 26
+    y += 24
 
     df = df_all.copy()
     df_pos = df[df["variacao_m"] > 0].copy()
@@ -505,7 +540,7 @@ def generate_image(
         rank_w = 44
         draw_rounded_rect(draw, x + card_w - rank_w - 10, y + 10, rank_w, 30, 14, fill=bd, outline=None, width=0)
         draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1),
-                  fill=(255, 255, 255), font=get_font(16, True), anchor="mm")
+                  fill=(255, 255, 255, 255), font=get_font(16, True), anchor="mm")
 
         name_area_w = card_w - 28 - 54
         line1, line2, f_name = wrap_name_two_lines(draw, nome.upper(), name_area_w, base_name, True)
@@ -531,9 +566,9 @@ def generate_image(
         l3 = f"%: {fmt_pct_br(pct)}"
 
         base_y = y + (86 if big else 76)
-        draw.text((x + 14, base_y), l1, fill=(51, 65, 85), font=f_line)
-        draw.text((x + 14, base_y + (22 if big else 20)), l2, fill=(51, 65, 85), font=f_line)
-        draw.text((x + 14, base_y + (44 if big else 40)), l3, fill=(51, 65, 85), font=f_line)
+        draw.text((x + 14, base_y), l1, fill=(51, 65, 85, 255), font=f_line)
+        draw.text((x + 14, base_y + (22 if big else 20)), l2, fill=(51, 65, 85, 255), font=f_line)
+        draw.text((x + 14, base_y + (44 if big else 40)), l3, fill=(51, 65, 85, 255), font=f_line)
 
     for i in range(min(18, len(ordered))):
         ri = i // cols_grid
@@ -547,10 +582,10 @@ def generate_image(
     draw.line((pad, foot_y - 18, W - pad, foot_y - 18), fill=(226, 232, 240, 255), width=2)
 
     f_foot = get_font(26 if big else 22, False)
-    draw.text((pad, foot_y), fonte_txt, fill=(100, 116, 139), font=f_foot)
+    draw.text((pad, foot_y), fonte_txt, fill=(100, 116, 139, 255), font=f_foot)
 
     ts = datetime.now(TZ_FORTALEZA).strftime("%d/%m/%Y %H:%M")
-    draw.text((W - pad, foot_y), f"Gerado em {ts}", fill=(100, 116, 139), font=f_foot, anchor="ra")
+    draw.text((W - pad, foot_y), f"Gerado em {ts}", fill=(100, 116, 139, 255), font=f_foot, anchor="ra")
 
     return img.convert("RGB") if formato.upper() == "JPG" else img
 
@@ -593,7 +628,7 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("Fix aplicado: fonte zero. Agora Feed e Stories funcionam.")
+    st.caption("KPIs premium + Bacia em pílula separada + comparativo com data inicial → data final.")
     st.divider()
 
     with st.sidebar:
@@ -655,8 +690,8 @@ def main():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total", total)
-    c2.metric("Subiram", up)
-    c3.metric("Desceram", down)
+    c2.metric("Com aporte", up)
+    c3.metric("Sem aporte", down)
 
     if debug:
         st.subheader("Prévia processada")
