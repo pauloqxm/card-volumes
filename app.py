@@ -2,16 +2,16 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  Ajuste visual
-#  - KPI em pílulas slim (igual vibe do layout)
-#  - Subiu/Desceu => Com aporte / Sem aporte
-#  - Comparativo com data inicial -> data final
-#  - Bacia em pílula separada com retângulo
+#  Atualizações pedidas:
+#  - Mantém layout atual
+#  - Apenas upload de CSV (sem Google Sheets)
+#  - Mapeamento baseado no base_reservatórios.csv
+#  - Atenção à unidade de volume (m³ bruto -> milhões/m³ opcional)
+#  - No card: abaixo do nome do açude, adiciona MUNICÍPIO
 # =============================================================
 
 import streamlit as st
 import pandas as pd
-import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
@@ -19,13 +19,6 @@ from zoneinfo import ZoneInfo
 import re
 
 BASE_LAYOUT_PATH = "base_card.png"
-
-DEFAULT_SHEET_CSV = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1fbaYqjee8h4dAA8ew0RXbHOKdnSDoHIB2xPpdveYMDU"
-    "/export?format=csv&gid=0"
-)
-
 TZ_FORTALEZA = ZoneInfo("America/Fortaleza")
 
 
@@ -112,6 +105,11 @@ def fmt_m_2dp_dot(v) -> str:
 
 
 def fmt_milhoes_br(v, convert_raw_m3_to_millions: bool) -> str:
+    """
+    Saída sempre: 8,00 milhões/m³
+    Se convert_raw_m3_to_millions=True: assume entrada em m³ bruto (8.000.000) e divide por 1.000.000
+    Se False: assume entrada já em milhões (8,00)
+    """
     if pd.isna(v):
         return "N/A"
     try:
@@ -225,59 +223,81 @@ def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
 
 
 # -----------------------------
-# Leitura dados
+# Upload CSV (auto separador)
 # -----------------------------
-@st.cache_data(ttl=300)
-def load_csv_from_url(url: str) -> pd.DataFrame:
-    resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-    resp.raise_for_status()
-    df = pd.read_csv(BytesIO(resp.content))
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
-
-
 def load_csv_from_upload(file) -> pd.DataFrame:
-    df = pd.read_csv(file)
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+    data = file.read()
+    # tenta ';' primeiro (padrão do teu arquivo)
+    try:
+        df = pd.read_csv(BytesIO(data), sep=";", dtype=str, encoding="utf-8")
+        if df.shape[1] == 1:
+            raise ValueError("CSV com 1 coluna, tentando separador vírgula")
+        return df
+    except Exception:
+        # fallback
+        df = pd.read_csv(BytesIO(data), sep=",", dtype=str, encoding="utf-8")
+        return df
+
+
+# -----------------------------
+# Mapeamento baseado no CSV referência
+# -----------------------------
+def _norm_col(c: str) -> str:
+    return re.sub(r"\s+", " ", str(c).strip()).upper()
+
+
+def find_date_cols(cols: list[str]) -> list[str]:
+    # pega colunas tipo 1/2/26, 26/2/26, 09/02/2026 etc.
+    date_like = []
+    for c in cols:
+        s = str(c).strip()
+        if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", s):
+            date_like.append(c)
+    return date_like[:2]
 
 
 def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    # normaliza cabeçalhos mantendo original
     cols = list(df_raw.columns)
+    norm_map = {_norm_col(c): c for c in cols}
 
-    def find_col_exact(name: str):
-        for c in cols:
-            if str(c).strip().lower() == name.strip().lower():
-                return c
-        return None
+    def col(name_upper: str):
+        return norm_map.get(name_upper)
 
-    date_anterior = cols[4] if len(cols) > 4 else ""
-    date_atual = cols[5] if len(cols) > 5 else ""
+    # colunas fixas do teu CSV
+    c_ger = col("GERÊNCIA")
+    c_bacia = col("BACIA")
+    c_acude = col("AÇUDE")
+    if not c_acude:
+        c_acude = col("AÇUDE ")  # por via das dúvidas
+    c_mun = col("MUNICÍPIO")
+    if not c_mun:
+        c_mun = col("MUNICÍPIO ")  # teu arquivo veio com espaço no final
+    c_var_m = col("VARIAÇÃO_M")
+    c_var_m3 = col("VARIAÇÃO_M³")
+    if not c_var_m3:
+        c_var_m3 = col("VARIAÇÃO_M3")
+    c_vol_atual = col("SITUAÇÃO ATUAL")  # no teu CSV, aqui está o volume atual (m³)
+    c_pct_atual = col("PERCENTUAL ATUAL")
 
-    col_ger = find_col_exact("Gerência")
-    col_bacia = find_col_exact("Bacia")
-    col_nome = find_col_exact("Nome do reservatório") or (cols[2] if len(cols) > 2 else cols[0])
-
-    col_var_m = find_col_exact("Variação em m")
-    col_var_m3 = find_col_exact("Variação em m³") or find_col_exact("Variação em m3")
-    col_vol = find_col_exact("Volume atual")
-    col_pct = find_col_exact("Percentual atual")
-
-    col_lvl_ant = cols[4] if len(cols) > 4 else None
-    col_lvl_atu = cols[5] if len(cols) > 5 else None
+    # datas (níveis)
+    date_cols = find_date_cols(cols)
+    date_ant = date_cols[0] if len(date_cols) > 0 else ""
+    date_atu = date_cols[1] if len(date_cols) > 1 else ""
 
     df = pd.DataFrame({
-        "gerencia": df_raw[col_ger].astype(str).str.strip() if col_ger else "N/A",
-        "bacia": df_raw[col_bacia].astype(str).str.strip() if col_bacia else "N/A",
-        "nome": df_raw[col_nome].astype(str).str.strip(),
-        "data_anterior": date_anterior,
-        "data_atual": date_atual,
-        "nivel_anterior": to_num_series(df_raw[col_lvl_ant]) if col_lvl_ant else pd.Series([None] * len(df_raw)),
-        "nivel_atual": to_num_series(df_raw[col_lvl_atu]) if col_lvl_atu else pd.Series([None] * len(df_raw)),
-        "variacao_m": to_num_series(df_raw[col_var_m]) if col_var_m else pd.Series([None] * len(df_raw)),
-        "variacao_m3": to_num_series(df_raw[col_var_m3]) if col_var_m3 else pd.Series([None] * len(df_raw)),
-        "volume_atual_m3": to_num_series(df_raw[col_vol]) if col_vol else pd.Series([None] * len(df_raw)),
-        "percentual": to_num_series(df_raw[col_pct]) if col_pct else pd.Series([None] * len(df_raw)),
+        "gerencia": (df_raw[c_ger].astype(str).str.strip() if c_ger else "N/A"),
+        "bacia": (df_raw[c_bacia].astype(str).str.strip() if c_bacia else "N/A"),
+        "nome": (df_raw[c_acude].astype(str).str.strip() if c_acude else df_raw.iloc[:, 0].astype(str).str.strip()),
+        "municipio": (df_raw[c_mun].astype(str).str.strip() if c_mun else "N/A"),
+        "data_anterior": str(date_ant).strip(),
+        "data_atual": str(date_atu).strip(),
+        "nivel_anterior": to_num_series(df_raw[date_ant]) if date_ant in df_raw.columns else pd.Series([None] * len(df_raw)),
+        "nivel_atual": to_num_series(df_raw[date_atu]) if date_atu in df_raw.columns else pd.Series([None] * len(df_raw)),
+        "variacao_m": to_num_series(df_raw[c_var_m]) if c_var_m else pd.Series([None] * len(df_raw)),
+        "variacao_m3": to_num_series(df_raw[c_var_m3]) if c_var_m3 else pd.Series([None] * len(df_raw)),
+        "volume_atual_m3": to_num_series(df_raw[c_vol_atual]) if c_vol_atual else pd.Series([None] * len(df_raw)),
+        "percentual": to_num_series(df_raw[c_pct_atual]) if c_pct_atual else pd.Series([None] * len(df_raw)),
     })
 
     df = df[
@@ -295,7 +315,7 @@ def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     info = {
         "colunas": cols,
         "shape": df_raw.shape,
-        "periodo": {"anterior": date_anterior, "atual": date_atual},
+        "periodo": {"anterior": str(date_ant).strip(), "atual": str(date_atu).strip()},
     }
     return df, info
 
@@ -355,7 +375,6 @@ def draw_kpis_row(draw, x, y, total, up, down, big=False):
 
 
 def draw_bacia_pill(draw, right_x, y, text_value, big=False):
-    # pílula direita, estilo clean
     outline = (147, 197, 253, 255)
     bg = (255, 255, 255, 255)
     tx = (30, 64, 175, 255)
@@ -441,17 +460,14 @@ def generate_image(
         y += 92
 
     if not big:
-        y = 150  # encaixe no layout do feed
+        y = 150
 
-    # Comparativo com data inicial -> data final
     comparativo = f"Comparativo  {date_anterior}  →  {date_atual}"
     draw.text((pad, y), comparativo, fill=gray, font=f_sub)
 
-    # Bacia em pílula separada, coluna da direita
     bacia_y = y - (4 if big else 2)
     bacia_x = draw_bacia_pill(draw, right_x=W - pad, y=bacia_y, text_value=bacia_txt, big=big)
 
-    # Se a pílula invadir o texto do comparativo, joga a bacia pra linha de baixo
     if bacia_x < pad + 540:
         bacia_y2 = y + (52 if big else 48)
         draw_bacia_pill(draw, right_x=W - pad, y=bacia_y2, text_value=bacia_txt, big=big)
@@ -459,7 +475,6 @@ def generate_image(
 
     y += 64 if big else 56
 
-    # KPIs estilo layout
     y = draw_kpis_row(draw, pad, y, total=total, up=up, down=down, big=big)
     y += 20
 
@@ -498,6 +513,8 @@ def generate_image(
 
     def draw_item(ix: int, row: pd.Series, x: int, y: int):
         nome = str(row.get("nome", "N/A")).strip()
+        municipio = str(row.get("municipio", "N/A")).strip()
+
         var_m = row.get("variacao_m", None)
         var_m3 = row.get("variacao_m3", None)
         vol = row.get("volume_atual_m3", None)
@@ -534,13 +551,22 @@ def generate_image(
 
         name_area_w = card_w - 28 - 54
         line1, line2, f_name = wrap_name_two_lines(draw, nome.upper(), name_area_w, base_name, True)
-        draw.text((x + 14, y + 12), line1, fill=dark, font=f_name)
+        draw.text((x + 14, y + 10), line1, fill=(15, 23, 42, 255), font=f_name)
+        name_y2 = y + 10 + (f_name.size + 2)
         if line2:
-            draw.text((x + 14, y + 12 + (f_name.size + 2)), line2, fill=dark, font=f_name)
+            draw.text((x + 14, name_y2), line2, fill=(15, 23, 42, 255), font=f_name)
+            muni_y = name_y2 + (f_name.size + 2)
+        else:
+            muni_y = name_y2
+
+        # MUNICÍPIO logo abaixo do nome
+        f_mun = get_font(14 if big else 13, False)
+        muni_txt = municipio.upper()
+        draw.text((x + 14, muni_y), muni_txt, fill=(71, 85, 105, 255), font=f_mun)
 
         f_var = get_font(base_var, True)
         arrow_x = x + 14
-        arrow_y = y + (56 if big else 52)
+        arrow_y = y + (58 if big else 54)
         draw_arrow(draw, arrow_x, arrow_y, up_arrow, 22 if big else 20, tx)
 
         if pd.isna(var_m):
@@ -555,7 +581,7 @@ def generate_image(
         l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
         l3 = f"%: {fmt_pct_br(pct)}"
 
-        base_y = y + (86 if big else 76)
+        base_y = y + (86 if big else 78)
         draw.text((x + 14, base_y), l1, fill=(51, 65, 85, 255), font=f_line)
         draw.text((x + 14, base_y + (22 if big else 20)), l2, fill=(51, 65, 85, 255), font=f_line)
         draw.text((x + 14, base_y + (44 if big else 40)), l3, fill=(51, 65, 85, 255), font=f_line)
@@ -618,24 +644,14 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("KPIs em pílulas slim, Bacia separada e comparativo com data inicial → data final.")
+    st.caption("Upload CSV, KPIs em pílulas, bacia destacada, e município no card.")
     st.divider()
 
     with st.sidebar:
-        st.markdown("## ⚙️ Configurações")
-        st.divider()
-
-        fonte = st.radio("Fonte de dados", ["Google Sheets", "Upload CSV"], index=0)
-        uploaded = None
-        sheet_url = DEFAULT_SHEET_CSV
-
-        if fonte == "Upload CSV":
-            uploaded = st.file_uploader("Envie o .csv", type=["csv"])
-        else:
-            sheet_url = st.text_input("Link CSV do Google Sheets", value=DEFAULT_SHEET_CSV)
+        st.markdown("## 📤 Upload do CSV")
+        uploaded = st.file_uploader("Envie o arquivo .csv", type=["csv"])
 
         st.divider()
-
         mode = st.selectbox("Formato", ["Feed (1080x1350)", "Stories (1080x1920)"], index=0)
         ordenar = st.selectbox(
             "Ordenação",
@@ -646,32 +662,22 @@ def main():
 
         convert_raw = st.checkbox(
             "Converter m³ bruto para milhões/m³",
-            value=False,
+            value=True,
             help="Marque se a planilha vier com valores em m³ (ex: 8000000). Desmarque se já vier em milhões (ex: 8,00)."
         )
 
         debug = st.toggle("Mostrar prévia", value=False)
-
-        st.divider()
-        if st.button("Atualizar dados", use_container_width=True):
-            load_csv_from_url.clear()
-            st.rerun()
-
         st.caption("GF Informática")
 
+    if uploaded is None:
+        st.info("Manda o CSV na lateral e eu gero o card.")
+        return
+
     try:
-        if fonte == "Upload CSV":
-            if uploaded is None:
-                st.info("Envia um CSV na lateral e eu gero o card.")
-                return
-            df_raw = load_csv_from_upload(uploaded)
-        else:
-            df_raw = load_csv_from_url(sheet_url)
-
+        df_raw = load_csv_from_upload(uploaded)
         df_proc, info = process_df(df_raw)
-
     except Exception as e:
-        st.error(f"Erro carregando dados: {e}")
+        st.error(f"Erro lendo o CSV: {e}")
         st.stop()
 
     total = len(df_proc)
@@ -685,7 +691,7 @@ def main():
 
     if debug:
         st.subheader("Prévia processada")
-        st.dataframe(df_proc.head(30), use_container_width=True)
+        st.dataframe(df_proc, use_container_width=True)
 
     st.divider()
 
