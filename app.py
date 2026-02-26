@@ -2,12 +2,15 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  Ajuste:
-#  - KPI "Com aporte" em azul (mesma linguagem dos cards positivos)
+#  Ajustes:
+#  - Município em 1 linha com reticências (não quebra)
+#  - Volta Google Sheets (automação) + mantém upload CSV
+#  - Tema branco e sidebar azul claro
 # =============================================================
 
 import streamlit as st
 import pandas as pd
+import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
@@ -18,6 +21,9 @@ BASE_LAYOUT_PATH = "base_card.png"
 TZ_FORTALEZA = ZoneInfo("America/Fortaleza")
 
 
+# ------------------------------
+# Fontes
+# ------------------------------
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     size = int(size) if size is not None else 14
     if size < 1:
@@ -50,6 +56,9 @@ def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
+# ------------------------------
+# Parsing numérico robusto
+# ------------------------------
 def smart_to_float(x):
     if pd.isna(x):
         return None
@@ -82,6 +91,9 @@ def to_num_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.map(smart_to_float), errors="coerce")
 
 
+# ------------------------------
+# Formatação
+# ------------------------------
 def fmt_m_2dp_dot(v) -> str:
     if pd.isna(v):
         return "N/A"
@@ -113,29 +125,33 @@ def fmt_pct_br(v) -> str:
         return "N/A"
 
 
-def draw_rounded_rect(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
-                      r: int, fill, outline=None, width: int = 2):
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=fill, outline=outline, width=width)
-
-
-def draw_arrow(draw: ImageDraw.ImageDraw, x: int, y: int, up: bool, size: int, color):
-    w = size
-    h = size
-    if up:
-        tri = [(x + w // 2, y), (x + w, y + h // 2), (x, y + h // 2)]
-        shaft = [x + w // 2 - max(2, w // 10), y + h // 2,
-                 x + w // 2 + max(2, w // 10), y + h]
-    else:
-        tri = [(x, y + h // 2), (x + w, y + h // 2), (x + w // 2, y + h)]
-        shaft = [x + w // 2 - max(2, w // 10), y,
-                 x + w // 2 + max(2, w // 10), y + h // 2]
-    draw.polygon(tri, fill=color)
-    draw.rectangle(shaft, fill=color)
-
-
+# ------------------------------
+# Helpers de texto (quebra e reticências)
+# ------------------------------
 def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
     bbox = draw.textbbox((0, 0), text, font=font)
     return int(bbox[2] - bbox[0])
+
+
+def ellipsize_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
+    text = (text or "").strip()
+    if not text:
+        return "N/A"
+    if text_width(draw, text, font) <= max_width:
+        return text
+
+    ell = "…"
+    lo, hi = 0, len(text)
+    best = ell
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = text[:mid].rstrip() + ell
+        if text_width(draw, cand, font) <= max_width:
+            best = cand
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
 
 
 def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
@@ -177,6 +193,7 @@ def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
 
         size -= 1
 
+    # fallback: segunda linha pode truncar com …
     font = get_font(min_font, bold=bold)
     line1 = ""
     i = 0
@@ -188,19 +205,15 @@ def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
         else:
             break
 
-    line2 = ""
-    while i < len(words):
-        test = (line2 + " " + words[i]).strip()
-        if text_width(draw, test + "…", font) <= max_width:
-            line2 = test
-            i += 1
-        else:
-            break
+    line2 = " ".join(words[i:]).strip()
     if line2:
-        line2 = line2 + "…"
+        line2 = ellipsize_text(draw, line2, font, max_width)
     return line1, line2, font
 
 
+# ------------------------------
+# Leitura CSV upload
+# ------------------------------
 def load_csv_from_upload(file) -> pd.DataFrame:
     data = file.read()
     try:
@@ -212,6 +225,33 @@ def load_csv_from_upload(file) -> pd.DataFrame:
         return pd.read_csv(BytesIO(data), sep=",", dtype=str, encoding="utf-8")
 
 
+# ------------------------------
+# Google Sheets helpers
+# ------------------------------
+def sheets_to_csv_url(sheet_url_or_id: str, gid: str = "0") -> str:
+    s = (sheet_url_or_id or "").strip()
+    if not s:
+        return ""
+    if "docs.google.com/spreadsheets" in s:
+        m = re.search(r"/d/([a-zA-Z0-9\-_]+)", s)
+        if not m:
+            return ""
+        sheet_id = m.group(1)
+    else:
+        sheet_id = s
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+
+@st.cache_data(ttl=300)
+def load_data_from_sheets(csv_url: str) -> pd.DataFrame:
+    resp = requests.get(csv_url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    resp.raise_for_status()
+    return pd.read_csv(BytesIO(resp.content), dtype=str)
+
+
+# ------------------------------
+# Mapeamento colunas (CSV padrão que tu enviou)
+# ------------------------------
 def _norm_col(c: str) -> str:
     return re.sub(r"\s+", " ", str(c).strip()).upper()
 
@@ -235,11 +275,11 @@ def process_df(df_raw: pd.DataFrame):
     c_ger = col("GERÊNCIA")
     c_bacia = col("BACIA")
     c_acude = col("AÇUDE")
-    c_mun = col("MUNICÍPIO") or col("MUNICÍPIO ")
-    c_var_m = col("VARIAÇÃO_M")
-    c_var_m3 = col("VARIAÇÃO_M³") or col("VARIAÇÃO_M3")
-    c_vol_atual = col("SITUAÇÃO ATUAL")
-    c_pct_atual = col("PERCENTUAL ATUAL")
+    c_mun = col("MUNICÍPIO") or col("MUNICIPIO")
+    c_var_m = col("VARIAÇÃO_M") or col("VARIAÇÃO EM M") or col("VARIACAO EM M")
+    c_var_m3 = col("VARIAÇÃO_M³") or col("VARIAÇÃO EM M³") or col("VARIACAO EM M3") or col("VARIAÇÃO_M3")
+    c_vol_atual = col("SITUAÇÃO ATUAL") or col("VOLUME ATUAL") or col("VOLUME ATUAL ")
+    c_pct_atual = col("PERCENTUAL ATUAL") or col("PERCENTUAL")
 
     date_cols = find_date_cols(cols)
     date_ant = date_cols[0] if len(date_cols) > 0 else ""
@@ -296,6 +336,29 @@ def build_bacia_label(df: pd.DataFrame) -> str:
     return " / ".join(uniques[:3]) + f" / +{len(uniques) - 3}"
 
 
+# ------------------------------
+# Desenho
+# ------------------------------
+def draw_rounded_rect(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
+                      r: int, fill, outline=None, width: int = 2):
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=fill, outline=outline, width=width)
+
+
+def draw_arrow(draw: ImageDraw.ImageDraw, x: int, y: int, up: bool, size: int, color):
+    w = size
+    h = size
+    if up:
+        tri = [(x + w // 2, y), (x + w, y + h // 2), (x, y + h // 2)]
+        shaft = [x + w // 2 - max(2, w // 10), y + h // 2,
+                 x + w // 2 + max(2, w // 10), y + h]
+    else:
+        tri = [(x, y + h // 2), (x + w, y + h // 2), (x + w // 2, y + h)]
+        shaft = [x + w // 2 - max(2, w // 10), y,
+                 x + w // 2 + max(2, w // 10), y + h // 2]
+    draw.polygon(tri, fill=color)
+    draw.rectangle(shaft, fill=color)
+
+
 def draw_kpi_pill(draw, x, y, w, h, label, value, outline, big=False):
     bg = (248, 250, 252, 255)
     text = (15, 23, 42, 255)
@@ -314,11 +377,11 @@ def draw_kpi_pill(draw, x, y, w, h, label, value, outline, big=False):
 def draw_kpis_row(draw, x, y, total, up, down, big=False):
     gap = 18
     h = 54 if big else 50
-
     w = 300 if big else 290
+
     o_total = (148, 163, 184, 255)
-    o_up = (59, 130, 246, 255)     # azul (antes era verde)
-    o_down = (244, 63, 94, 255)
+    o_up = (59, 130, 246, 255)     # azul
+    o_down = (244, 63, 94, 255)    # vermelho
 
     draw_kpi_pill(draw, x + 0*(w+gap), y, w, h, "Total", total, o_total, big)
     draw_kpi_pill(draw, x + 1*(w+gap), y, w, h, "Com aporte", up, o_up, big)
@@ -366,14 +429,17 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
     dark = (15, 23, 42, 255)
     gray = (71, 85, 105, 255)
 
+    # positivos: azul
     blue_bg = (219, 234, 254, 255)
     blue_bd = (59, 130, 246, 255)
     blue_tx = (29, 78, 216, 255)
 
+    # negativos: vermelho
     red_bg = (255, 241, 242, 255)
     red_bd = (251, 113, 133, 255)
     red_tx = (225, 29, 72, 255)
 
+    # neutro: cinza
     neutral_bg = (241, 245, 249, 255)
     neutral_bd = (148, 163, 184, 255)
     neutral_tx = (51, 65, 85, 255)
@@ -410,7 +476,6 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
 
     bacia_y = y - (4 if big else 2)
     bacia_x = draw_bacia_pill(draw, right_x=W - pad, y=bacia_y, text_value=bacia_txt, big=big)
-
     if bacia_x < pad + 540:
         bacia_y2 = y + (52 if big else 48)
         draw_bacia_pill(draw, right_x=W - pad, y=bacia_y2, text_value=bacia_txt, big=big)
@@ -487,25 +552,30 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
 
         draw_rounded_rect(draw, x, y, card_w, card_h, 22, fill=bg, outline=bd, width=2)
 
+        # badge rank
         rank_w = 44
         draw_rounded_rect(draw, x + card_w - rank_w - 10, y + 10, rank_w, 30, 14, fill=bd, outline=None, width=0)
         draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1),
                   fill=(255, 255, 255, 255), font=get_font(16, True), anchor="mm")
 
+        # nome (até 2 linhas)
         name_area_w = card_w - 28 - 54
         line1, line2, f_name = wrap_name_two_lines(draw, nome.upper(), name_area_w, base_name, True)
         draw.text((x + 14, y + 10), line1, fill=(15, 23, 42, 255), font=f_name)
-        name_y2 = y + 10 + (f_name.size + 2)
+        y_after_name = y + 10 + (f_name.size + 2)
         if line2:
-            draw.text((x + 14, name_y2), line2, fill=(15, 23, 42, 255), font=f_name)
-            muni_y = name_y2 + (f_name.size + 2)
-        else:
-            muni_y = name_y2
+            draw.text((x + 14, y_after_name), line2, fill=(15, 23, 42, 255), font=f_name)
+            y_after_name += (f_name.size + 2)
 
+        # município: 1 linha + reticências (não quebra)
         f_mun = get_font(14 if big else 13, False)
-        muni_txt = f"Município: {municipio}"
-        draw.text((x + 14, muni_y), muni_txt, fill=(71, 85, 105, 255), font=f_mun)
+        muni_prefix = "Município: "
+        muni_text = muni_prefix + municipio
+        muni_max_w = card_w - 28  # margem total
+        muni_text = ellipsize_text(draw, muni_text, f_mun, muni_max_w)
+        draw.text((x + 14, y_after_name), muni_text, fill=(71, 85, 105, 255), font=f_mun)
 
+        # variação principal
         f_var = get_font(base_var, True)
         arrow_x = x + 14
         arrow_y = y + (58 if big else 54)
@@ -518,6 +588,7 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
             var_txt = f"{sign}{fmt_m_2dp_dot(var_m)}"
         draw.text((x + 44, arrow_y - 2), var_txt, fill=tx, font=f_var)
 
+        # linhas
         f_line = get_font(base_line, False)
         l1 = f"Var. m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
         l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
@@ -535,6 +606,7 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         cy = grid_y + ri * (card_h + gap_y)
         draw_item(i, ordered.iloc[i], cx, cy)
 
+    # rodapé
     fonte_txt = build_fonte_gerencia(df_all)
     foot_y = H - (72 if big else 70)
     draw.line((pad, foot_y - 18, W - pad, foot_y - 18), fill=(226, 232, 240, 255), width=2)
@@ -548,6 +620,9 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
     return img.convert("RGB") if formato.upper() == "JPG" else img
 
 
+# ------------------------------
+# Streamlit App
+# ------------------------------
 def main():
     st.set_page_config(
         page_title="Reservatórios - Card Generator",
@@ -556,39 +631,68 @@ def main():
         initial_sidebar_state="expanded"
     )
 
+    # Tema branco e sidebar azul claro
     st.markdown(
         """
         <style>
-            .stApp { background-color: #0a1628; color: #e0e0e0; }
-            section[data-testid="stSidebar"] { background-color: #0d1f35 !important; }
-            h1, h2, h3 { color: #4FC3F7 !important; }
-            div[data-testid="metric-container"] {
-                background: rgba(0,200,83,.08);
-                border: 1px solid rgba(0,200,83,.28);
-                border-radius: 10px;
-                padding: 8px;
-            }
+            .stApp { background-color: #ffffff; color: #0f172a; }
+            section[data-testid="stSidebar"] { background-color: #dbeafe !important; }
+            .stMarkdown, .stText, label, p, span, div { color: #0f172a; }
+            h1, h2, h3 { color: #0b2a5b !important; }
             .stButton > button {
-                background:#00C853; color:#fff; border-radius:8px;
-                font-weight:700; border:none;
+                background:#2563eb; color:#fff; border-radius:10px;
+                font-weight:800; border:none;
             }
-            .stButton > button:hover { background:#00a844; }
+            .stButton > button:hover { background:#1d4ed8; }
             .stDownloadButton > button {
-                background:#1565C0; color:#fff; border-radius:8px;
-                font-weight:700; border:none;
+                background:#0ea5e9; color:#fff; border-radius:10px;
+                font-weight:800; border:none;
             }
+            .stDownloadButton > button:hover { background:#0284c7; }
         </style>
         """,
         unsafe_allow_html=True
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("KPI Com aporte em azul, cards positivos em azul, município padronizado.")
+    st.caption("Google Sheets para automatizar, ou CSV quando precisar.")
     st.divider()
 
     with st.sidebar:
-        st.markdown("## 📤 Upload do CSV")
-        uploaded = st.file_uploader("Envie o arquivo .csv", type=["csv"])
+        st.markdown("## Fonte de dados")
+        fonte = st.radio("Escolha", ["Google Sheets", "Upload CSV"], index=0)
+
+        df_raw = None
+
+        if fonte == "Google Sheets":
+            st.markdown("### Google Sheets")
+            sheet_link = st.text_input(
+                "Link (ou ID) da planilha",
+                value="https://docs.google.com/spreadsheets/d/1fbaYqjee8h4dAA8ew0RXbHOKdnSDoHIB2xPpdveYMDU/edit?usp=sharing"
+            )
+            gid = st.text_input("GID", value="0", help="Aba da planilha. Geralmente 0.")
+            csv_url = sheets_to_csv_url(sheet_link, gid=gid)
+            st.caption("URL CSV gerada automaticamente.")
+            st.code(csv_url or "Informe um link/ID válido", language="text")
+
+            if st.button("Atualizar dados", use_container_width=True):
+                load_data_from_sheets.clear()
+                st.rerun()
+
+            if csv_url:
+                try:
+                    df_raw = load_data_from_sheets(csv_url)
+                except Exception as e:
+                    st.error(f"Erro ao ler planilha: {e}")
+
+        else:
+            st.markdown("### Upload CSV")
+            uploaded = st.file_uploader("Envie o arquivo .csv", type=["csv"])
+            if uploaded is not None:
+                try:
+                    df_raw = load_csv_from_upload(uploaded)
+                except Exception as e:
+                    st.error(f"Erro lendo CSV: {e}")
 
         st.divider()
         mode = st.selectbox("Formato", ["Feed (1080x1350)", "Stories (1080x1920)"], index=0)
@@ -602,21 +706,20 @@ def main():
         convert_raw = st.checkbox(
             "Converter m³ bruto para milhões/m³",
             value=True,
-            help="Marque se a planilha vier com valores em m³ (ex: 8000000). Desmarque se já vier em milhões (ex: 8,00)."
+            help="Marque se vier em m³ (ex: 8000000). Desmarque se já vier em milhões (ex: 8,00)."
         )
 
         debug = st.toggle("Mostrar prévia", value=False)
         st.caption("GF Informática")
 
-    if uploaded is None:
-        st.info("Manda o CSV na lateral e eu gero o card.")
+    if df_raw is None or df_raw.empty:
+        st.info("Escolhe a fonte na lateral e carrega os dados.")
         return
 
     try:
-        df_raw = load_csv_from_upload(uploaded)
         df_proc, info = process_df(df_raw)
     except Exception as e:
-        st.error(f"Erro lendo o CSV: {e}")
+        st.error(f"Erro processando dados: {e}")
         st.stop()
 
     total = len(df_proc)
