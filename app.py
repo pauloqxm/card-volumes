@@ -1,18 +1,3 @@
-# =============================================================
-#  app.py  |  Monitoramento de Reservatórios - Card Generator
-#  GF Informática  |  Pedro Ferreira
-#
-#  Atualizações nesta versão:
-#  - Comparativo com fonte pequena alinhado na base
-#  - Barra do percentual com track mais escuro + brilho, e track por tipo (positivo azul, negativo vermelho)
-#  - Açude e Município em 1 linha com reticências
-#  - Google Sheets + Upload CSV
-#  - Tema branco e sidebar azul claro
-#  - Cards positivos em azul
-#  - KPI Total / Com aporte / Sem aporte
-#  - Volume e variações em milhões/m³ (com opção de conversão)
-# =============================================================
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -338,8 +323,8 @@ def draw_kpis_row(draw, x, y, total, up, down, big=False):
     o_down = (244, 63, 94, 255)
 
     draw_kpi_pill(draw, x + 0*(w+gap), y, w, h, "Total", total, o_total, big)
-    draw_kpi_pill(draw, x + 1*(w+gap), y, w, h, "Com aporte", up, o_up, big)
-    draw_kpi_pill(draw, x + 2*(w+gap), y, w, h, "Sem aporte", down, o_down, big)
+    draw_kpi_pill(draw, x + 1*(w+gap), y, w, h, "Variação positiva", up, o_up, big)
+    draw_kpi_pill(draw, x + 2*(w+gap), y, w, h, "Variação negativa", down, o_down, big)
 
     return y + h
 
@@ -543,8 +528,8 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
 
         # Linhas
         f_line = get_font(f_line_base, False)
-        l1 = f"Var. m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
-        l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
+        l1 = f"Variação m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
+        l2 = f"Volume atual: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
         draw.text((x + 14, y + (86 if big else 78)), l1, fill=(51, 65, 85, 255), font=f_line)
         draw.text((x + 14, y + (108 if big else 98)), l2, fill=(51, 65, 85, 255), font=f_line)
 
@@ -707,8 +692,8 @@ def main():
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total", total)
-    c2.metric("Com aporte", up)
-    c3.metric("Sem aporte", down)
+    c2.metric("Variação positiva", up)
+    c3.metric("Variação negativa", down)
 
     if debug:
         st.subheader("Prévia processada")
