@@ -2,10 +2,14 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  Ajustes:
-#  - Município em 1 linha com reticências (não quebra)
-#  - Volta Google Sheets (automação) + mantém upload CSV
+#  Atualizações:
+#  - Nome do Açude: 1 linha com reticências (sem quebrar)
+#  - Município: 1 linha com reticências (sem quebrar)
+#  - Google Sheets + Upload CSV
 #  - Tema branco e sidebar azul claro
+#  - Cards positivos em azul
+#  - KPI Total / Com aporte / Sem aporte
+#  - Volume e variações em milhões/m³ (com opção de conversão)
 # =============================================================
 
 import streamlit as st
@@ -45,11 +49,13 @@ def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
     ]
+
     for path in (paths_bold if bold else paths_regular):
         try:
             return ImageFont.truetype(path, size)
         except (IOError, OSError, ValueError):
             continue
+
     try:
         return ImageFont.load_default(size=size)
     except TypeError:
@@ -104,6 +110,10 @@ def fmt_m_2dp_dot(v) -> str:
 
 
 def fmt_milhoes_br(v, convert_raw_m3_to_millions: bool) -> str:
+    """
+    Exibe como "8,00 milhões/m³".
+    Se convert_raw_m3_to_millions=True, converte m³ bruto -> milhões (divide 1.000.000).
+    """
     if pd.isna(v):
         return "N/A"
     try:
@@ -126,7 +136,7 @@ def fmt_pct_br(v) -> str:
 
 
 # ------------------------------
-# Helpers de texto (quebra e reticências)
+# Helpers de texto
 # ------------------------------
 def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -134,6 +144,9 @@ def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
 
 
 def ellipsize_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
+    """
+    Mantém texto em 1 linha, corta com reticências se passar do limite.
+    """
     text = (text or "").strip()
     if not text:
         return "N/A"
@@ -152,63 +165,6 @@ def ellipsize_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTyp
         else:
             hi = mid - 1
     return best
-
-
-def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
-                        base_font_size: int, bold: bool):
-    name = (name or "").strip()
-    words = [w for w in re.split(r"\s+", name) if w]
-    if not words:
-        font = get_font(base_font_size, bold=bold)
-        return "N/A", "", font
-
-    min_font = max(12, base_font_size - 6)
-    size = base_font_size
-
-    while size >= min_font:
-        font = get_font(size, bold=bold)
-
-        line1 = ""
-        line2 = ""
-        i = 0
-
-        while i < len(words):
-            test = (line1 + " " + words[i]).strip()
-            if text_width(draw, test, font) <= max_width:
-                line1 = test
-                i += 1
-            else:
-                break
-
-        while i < len(words):
-            test = (line2 + " " + words[i]).strip()
-            if text_width(draw, test, font) <= max_width:
-                line2 = test
-                i += 1
-            else:
-                break
-
-        if i == len(words):
-            return line1, line2, font
-
-        size -= 1
-
-    # fallback: segunda linha pode truncar com …
-    font = get_font(min_font, bold=bold)
-    line1 = ""
-    i = 0
-    while i < len(words):
-        test = (line1 + " " + words[i]).strip()
-        if text_width(draw, test, font) <= max_width:
-            line1 = test
-            i += 1
-        else:
-            break
-
-    line2 = " ".join(words[i:]).strip()
-    if line2:
-        line2 = ellipsize_text(draw, line2, font, max_width)
-    return line1, line2, font
 
 
 # ------------------------------
@@ -250,7 +206,7 @@ def load_data_from_sheets(csv_url: str) -> pd.DataFrame:
 
 
 # ------------------------------
-# Mapeamento colunas (CSV padrão que tu enviou)
+# Mapeamento colunas
 # ------------------------------
 def _norm_col(c: str) -> str:
     return re.sub(r"\s+", " ", str(c).strip()).upper()
@@ -278,7 +234,7 @@ def process_df(df_raw: pd.DataFrame):
     c_mun = col("MUNICÍPIO") or col("MUNICIPIO")
     c_var_m = col("VARIAÇÃO_M") or col("VARIAÇÃO EM M") or col("VARIACAO EM M")
     c_var_m3 = col("VARIAÇÃO_M³") or col("VARIAÇÃO EM M³") or col("VARIACAO EM M3") or col("VARIAÇÃO_M3")
-    c_vol_atual = col("SITUAÇÃO ATUAL") or col("VOLUME ATUAL") or col("VOLUME ATUAL ")
+    c_vol_atual = col("SITUAÇÃO ATUAL") or col("VOLUME ATUAL")
     c_pct_atual = col("PERCENTUAL ATUAL") or col("PERCENTUAL")
 
     date_cols = find_date_cols(cols)
@@ -446,13 +402,10 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
 
     f_sub = get_font(34 if big else 28, False)
 
-    f_name_pos_base = 22 if big else 18
-    f_line_pos_base = 17 if big else 15
-    f_var_pos_base = 22 if big else 18
-
-    f_name_neg_base = 20 if big else 16
-    f_line_neg_base = 15 if big else 13
-    f_var_neg_base = 20 if big else 16
+    # tamanhos
+    f_name_base = 22 if big else 18
+    f_line_base = 17 if big else 15
+    f_var_base = 22 if big else 18
 
     pad = 70
 
@@ -534,21 +487,12 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         if is_pos:
             bg, bd, tx = blue_bg, blue_bd, blue_tx
             up_arrow = True
-            base_name = f_name_pos_base
-            base_line = f_line_pos_base
-            base_var = f_var_pos_base
         elif is_neg:
             bg, bd, tx = red_bg, red_bd, red_tx
             up_arrow = False
-            base_name = f_name_neg_base
-            base_line = f_line_neg_base
-            base_var = f_var_neg_base
         else:
             bg, bd, tx = neutral_bg, neutral_bd, neutral_tx
             up_arrow = True
-            base_name = f_name_neg_base
-            base_line = f_line_neg_base
-            base_var = f_var_neg_base
 
         draw_rounded_rect(draw, x, y, card_w, card_h, 22, fill=bg, outline=bd, width=2)
 
@@ -558,25 +502,22 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1),
                   fill=(255, 255, 255, 255), font=get_font(16, True), anchor="mm")
 
-        # nome (até 2 linhas)
-        name_area_w = card_w - 28 - 54
-        line1, line2, f_name = wrap_name_two_lines(draw, nome.upper(), name_area_w, base_name, True)
-        draw.text((x + 14, y + 10), line1, fill=(15, 23, 42, 255), font=f_name)
-        y_after_name = y + 10 + (f_name.size + 2)
-        if line2:
-            draw.text((x + 14, y_after_name), line2, fill=(15, 23, 42, 255), font=f_name)
-            y_after_name += (f_name.size + 2)
+        # --- AÇUDE: 1 linha com reticências ---
+        name_area_w = card_w - 28 - 54  # deixa espaço do badge
+        f_name = get_font(f_name_base, True)
+        nome_1linha = ellipsize_text(draw, nome.upper(), f_name, name_area_w)
+        draw.text((x + 14, y + 10), nome_1linha, fill=(15, 23, 42, 255), font=f_name)
 
-        # município: 1 linha + reticências (não quebra)
+        # --- MUNICÍPIO: 1 linha com reticências ---
         f_mun = get_font(14 if big else 13, False)
-        muni_prefix = "Município: "
-        muni_text = muni_prefix + municipio
-        muni_max_w = card_w - 28  # margem total
+        muni_text = f"Município: {municipio}"
+        muni_max_w = card_w - 28
         muni_text = ellipsize_text(draw, muni_text, f_mun, muni_max_w)
-        draw.text((x + 14, y_after_name), muni_text, fill=(71, 85, 105, 255), font=f_mun)
+        y_mun = y + 10 + f_name.size + 2
+        draw.text((x + 14, y_mun), muni_text, fill=(100, 116, 139, 255), font=f_mun)
 
         # variação principal
-        f_var = get_font(base_var, True)
+        f_var = get_font(f_var_base, True)
         arrow_x = x + 14
         arrow_y = y + (58 if big else 54)
         draw_arrow(draw, arrow_x, arrow_y, up_arrow, 22 if big else 20, tx)
@@ -589,7 +530,7 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         draw.text((x + 44, arrow_y - 2), var_txt, fill=tx, font=f_var)
 
         # linhas
-        f_line = get_font(base_line, False)
+        f_line = get_font(f_line_base, False)
         l1 = f"Var. m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
         l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
         l3 = f"%: {fmt_pct_br(pct)}"
@@ -655,7 +596,7 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("Google Sheets para automatizar, ou CSV quando precisar.")
+    st.caption("Automatize com Google Sheets ou use CSV quando precisar.")
     st.divider()
 
     with st.sidebar:
@@ -713,7 +654,7 @@ def main():
         st.caption("GF Informática")
 
     if df_raw is None or df_raw.empty:
-        st.info("Escolhe a fonte na lateral e carrega os dados.")
+        st.info("Escolha a fonte na lateral e carregue os dados.")
         return
 
     try:
