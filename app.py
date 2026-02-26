@@ -529,7 +529,7 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         # Linhas
         f_line = get_font(f_line_base, False)
         l1 = f"Variação m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
-        l2 = f"Volume atual: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
+        l2 = f"Vol. atual: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
         draw.text((x + 14, y + (86 if big else 78)), l1, fill=(51, 65, 85, 255), font=f_line)
         draw.text((x + 14, y + (108 if big else 98)), l2, fill=(51, 65, 85, 255), font=f_line)
 
