@@ -1,17 +1,3 @@
-# =============================================================
-#  app.py  |  Monitoramento de Reservatórios - Card Generator
-#  GF Informática  |  Pedro Ferreira
-#
-#  Atualizações:
-#  - Nome do Açude: 1 linha com reticências (sem quebrar)
-#  - Município: 1 linha com reticências (sem quebrar)
-#  - Google Sheets + Upload CSV
-#  - Tema branco e sidebar azul claro
-#  - Cards positivos em azul
-#  - KPI Total / Com aporte / Sem aporte
-#  - Volume e variações em milhões/m³ (com opção de conversão)
-# =============================================================
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -144,9 +130,6 @@ def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
 
 
 def ellipsize_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
-    """
-    Mantém texto em 1 linha, corta com reticências se passar do limite.
-    """
     text = (text or "").strip()
     if not text:
         return "N/A"
@@ -336,8 +319,8 @@ def draw_kpis_row(draw, x, y, total, up, down, big=False):
     w = 300 if big else 290
 
     o_total = (148, 163, 184, 255)
-    o_up = (59, 130, 246, 255)     # azul
-    o_down = (244, 63, 94, 255)    # vermelho
+    o_up = (59, 130, 246, 255)
+    o_down = (244, 63, 94, 255)
 
     draw_kpi_pill(draw, x + 0*(w+gap), y, w, h, "Total", total, o_total, big)
     draw_kpi_pill(draw, x + 1*(w+gap), y, w, h, "Com aporte", up, o_up, big)
@@ -400,12 +383,13 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
     neutral_bd = (148, 163, 184, 255)
     neutral_tx = (51, 65, 85, 255)
 
-    f_sub = get_font(34 if big else 28, False)
-
-    # tamanhos
+    # fontes base dos cards
     f_name_base = 22 if big else 18
     f_line_base = 17 if big else 15
     f_var_base = 22 if big else 18
+
+    # fonte pequena (igual município)
+    f_small = get_font(14 if big else 13, False)
 
     pad = 70
 
@@ -424,17 +408,19 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
     if not big:
         y = 150
 
+    # ✅ Comparativo com fonte pequena (igual Município)
     comparativo = f"Comparativo  {date_anterior}  →  {date_atual}"
-    draw.text((pad, y), comparativo, fill=gray, font=f_sub)
+    draw.text((pad, y), comparativo, fill=gray, font=f_small)
 
-    bacia_y = y - (4 if big else 2)
+    # bacia (mantém destacada)
+    bacia_y = y - (6 if big else 4)
     bacia_x = draw_bacia_pill(draw, right_x=W - pad, y=bacia_y, text_value=bacia_txt, big=big)
     if bacia_x < pad + 540:
-        bacia_y2 = y + (52 if big else 48)
+        bacia_y2 = y + (40 if big else 36)
         draw_bacia_pill(draw, right_x=W - pad, y=bacia_y2, text_value=bacia_txt, big=big)
-        y += (52 if big else 48)
+        y += (40 if big else 36)
 
-    y += 64 if big else 56
+    y += 52 if big else 46
 
     y = draw_kpis_row(draw, pad, y, total=total, up=up, down=down, big=big)
     y += 20
@@ -502,17 +488,16 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1),
                   fill=(255, 255, 255, 255), font=get_font(16, True), anchor="mm")
 
-        # --- AÇUDE: 1 linha com reticências ---
-        name_area_w = card_w - 28 - 54  # deixa espaço do badge
+        # AÇUDE: 1 linha com reticências
+        name_area_w = card_w - 28 - 54
         f_name = get_font(f_name_base, True)
         nome_1linha = ellipsize_text(draw, nome.upper(), f_name, name_area_w)
         draw.text((x + 14, y + 10), nome_1linha, fill=(15, 23, 42, 255), font=f_name)
 
-        # --- MUNICÍPIO: 1 linha com reticências ---
+        # MUNICÍPIO: 1 linha com reticências
         f_mun = get_font(14 if big else 13, False)
         muni_text = f"Município: {municipio}"
-        muni_max_w = card_w - 28
-        muni_text = ellipsize_text(draw, muni_text, f_mun, muni_max_w)
+        muni_text = ellipsize_text(draw, muni_text, f_mun, card_w - 28)
         y_mun = y + 10 + f_name.size + 2
         draw.text((x + 14, y_mun), muni_text, fill=(100, 116, 139, 255), font=f_mun)
 
@@ -533,12 +518,34 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         f_line = get_font(f_line_base, False)
         l1 = f"Var. m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
         l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
-        l3 = f"%: {fmt_pct_br(pct)}"
+        draw.text((x + 14, y + (86 if big else 78)), l1, fill=(51, 65, 85, 255), font=f_line)
+        draw.text((x + 14, y + (108 if big else 98)), l2, fill=(51, 65, 85, 255), font=f_line)
 
-        base_y = y + (86 if big else 78)
-        draw.text((x + 14, base_y), l1, fill=(51, 65, 85, 255), font=f_line)
-        draw.text((x + 14, base_y + (22 if big else 20)), l2, fill=(51, 65, 85, 255), font=f_line)
-        draw.text((x + 14, base_y + (44 if big else 40)), l3, fill=(51, 65, 85, 255), font=f_line)
+        # ✅ Percentual como barra (progress bar)
+        pct_val = 0.0
+        if not pd.isna(pct):
+            try:
+                pct_val = float(pct)
+            except:
+                pct_val = 0.0
+        pct_val = max(0.0, min(100.0, pct_val))
+
+        bar_x = x + 14
+        bar_w = card_w - 28
+        bar_h = 10 if big else 8
+        bar_y = y + card_h - (30 if big else 26)
+
+        # fundo da barra
+        draw_rounded_rect(draw, bar_x, bar_y, bar_w, bar_h, r=6, fill=(226, 232, 240, 255), outline=None, width=0)
+        # preenchimento
+        fill_w = int(bar_w * (pct_val / 100.0))
+        if fill_w > 0:
+            draw_rounded_rect(draw, bar_x, bar_y, fill_w, bar_h, r=6, fill=tx, outline=None, width=0)
+
+        # texto do percentual
+        f_pct = get_font(16 if big else 14, True)
+        pct_txt = f"{fmt_pct_br(pct_val)}%"
+        draw.text((x + card_w - 14, bar_y - (18 if big else 16)), pct_txt, fill=tx, font=f_pct, anchor="ra")
 
     for i in range(min(18, len(ordered))):
         ri = i // cols_grid
@@ -572,7 +579,6 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    # Tema branco e sidebar azul claro
     st.markdown(
         """
         <style>
