@@ -2,12 +2,9 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  Atualizações pedidas:
-#  - Mantém layout atual
-#  - Apenas upload de CSV (sem Google Sheets)
-#  - Mapeamento baseado no base_reservatórios.csv
-#  - Atenção à unidade de volume (m³ bruto -> milhões/m³ opcional)
-#  - No card: abaixo do nome do açude, adiciona MUNICÍPIO
+#  Atualizações:
+#  - Cards positivos em AZUL
+#  - Município exibido como: "Município: <valor>"
 # =============================================================
 
 import streamlit as st
@@ -22,9 +19,6 @@ BASE_LAYOUT_PATH = "base_card.png"
 TZ_FORTALEZA = ZoneInfo("America/Fortaleza")
 
 
-# -----------------------------
-# Fontes
-# -----------------------------
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     size = int(size) if size is not None else 14
     if size < 1:
@@ -57,9 +51,6 @@ def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
-# -----------------------------
-# Parser robusto de número
-# -----------------------------
 def smart_to_float(x):
     if pd.isna(x):
         return None
@@ -92,9 +83,6 @@ def to_num_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.map(smart_to_float), errors="coerce")
 
 
-# -----------------------------
-# Formatação final
-# -----------------------------
 def fmt_m_2dp_dot(v) -> str:
     if pd.isna(v):
         return "N/A"
@@ -105,11 +93,6 @@ def fmt_m_2dp_dot(v) -> str:
 
 
 def fmt_milhoes_br(v, convert_raw_m3_to_millions: bool) -> str:
-    """
-    Saída sempre: 8,00 milhões/m³
-    Se convert_raw_m3_to_millions=True: assume entrada em m³ bruto (8.000.000) e divide por 1.000.000
-    Se False: assume entrada já em milhões (8,00)
-    """
     if pd.isna(v):
         return "N/A"
     try:
@@ -131,9 +114,6 @@ def fmt_pct_br(v) -> str:
         return "N/A"
 
 
-# -----------------------------
-# Desenho utilitários
-# -----------------------------
 def draw_rounded_rect(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
                       r: int, fill, outline=None, width: int = 2):
     draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=fill, outline=outline, width=width)
@@ -160,7 +140,7 @@ def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
 
 
 def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
-                        base_font_size: int, bold: bool) -> tuple[str, str, ImageFont.FreeTypeFont]:
+                        base_font_size: int, bold: bool):
     name = (name or "").strip()
     words = [w for w in re.split(r"\s+", name) if w]
     if not words:
@@ -222,32 +202,22 @@ def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
     return line1, line2, font
 
 
-# -----------------------------
-# Upload CSV (auto separador)
-# -----------------------------
 def load_csv_from_upload(file) -> pd.DataFrame:
     data = file.read()
-    # tenta ';' primeiro (padrão do teu arquivo)
     try:
         df = pd.read_csv(BytesIO(data), sep=";", dtype=str, encoding="utf-8")
         if df.shape[1] == 1:
-            raise ValueError("CSV com 1 coluna, tentando separador vírgula")
+            raise ValueError("CSV com 1 coluna")
         return df
     except Exception:
-        # fallback
-        df = pd.read_csv(BytesIO(data), sep=",", dtype=str, encoding="utf-8")
-        return df
+        return pd.read_csv(BytesIO(data), sep=",", dtype=str, encoding="utf-8")
 
 
-# -----------------------------
-# Mapeamento baseado no CSV referência
-# -----------------------------
 def _norm_col(c: str) -> str:
     return re.sub(r"\s+", " ", str(c).strip()).upper()
 
 
 def find_date_cols(cols: list[str]) -> list[str]:
-    # pega colunas tipo 1/2/26, 26/2/26, 09/02/2026 etc.
     date_like = []
     for c in cols:
         s = str(c).strip()
@@ -256,31 +226,22 @@ def find_date_cols(cols: list[str]) -> list[str]:
     return date_like[:2]
 
 
-def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    # normaliza cabeçalhos mantendo original
+def process_df(df_raw: pd.DataFrame):
     cols = list(df_raw.columns)
     norm_map = {_norm_col(c): c for c in cols}
 
     def col(name_upper: str):
         return norm_map.get(name_upper)
 
-    # colunas fixas do teu CSV
     c_ger = col("GERÊNCIA")
     c_bacia = col("BACIA")
     c_acude = col("AÇUDE")
-    if not c_acude:
-        c_acude = col("AÇUDE ")  # por via das dúvidas
-    c_mun = col("MUNICÍPIO")
-    if not c_mun:
-        c_mun = col("MUNICÍPIO ")  # teu arquivo veio com espaço no final
+    c_mun = col("MUNICÍPIO") or col("MUNICÍPIO ")
     c_var_m = col("VARIAÇÃO_M")
-    c_var_m3 = col("VARIAÇÃO_M³")
-    if not c_var_m3:
-        c_var_m3 = col("VARIAÇÃO_M3")
-    c_vol_atual = col("SITUAÇÃO ATUAL")  # no teu CSV, aqui está o volume atual (m³)
+    c_var_m3 = col("VARIAÇÃO_M³") or col("VARIAÇÃO_M3")
+    c_vol_atual = col("SITUAÇÃO ATUAL")
     c_pct_atual = col("PERCENTUAL ATUAL")
 
-    # datas (níveis)
     date_cols = find_date_cols(cols)
     date_ant = date_cols[0] if len(date_cols) > 0 else ""
     date_atu = date_cols[1] if len(date_cols) > 1 else ""
@@ -312,11 +273,7 @@ def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     for c in ["variacao_m", "variacao_m3", "volume_atual_m3", "percentual"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    info = {
-        "colunas": cols,
-        "shape": df_raw.shape,
-        "periodo": {"anterior": str(date_ant).strip(), "atual": str(date_atu).strip()},
-    }
+    info = {"periodo": {"anterior": str(date_ant).strip(), "atual": str(date_atu).strip()}, "colunas": cols}
     return df, info
 
 
@@ -340,9 +297,6 @@ def build_bacia_label(df: pd.DataFrame) -> str:
     return " / ".join(uniques[:3]) + f" / +{len(uniques) - 3}"
 
 
-# -----------------------------
-# KPI slim estilo layout
-# -----------------------------
 def draw_kpi_pill(draw, x, y, w, h, label, value, outline, big=False):
     bg = (248, 250, 252, 255)
     text = (15, 23, 42, 255)
@@ -390,18 +344,8 @@ def draw_bacia_pill(draw, right_x, y, text_value, big=False):
     return x
 
 
-# -----------------------------
-# Geração
-# -----------------------------
-def generate_image(
-    df_all: pd.DataFrame,
-    mode: str,
-    date_anterior: str,
-    date_atual: str,
-    ordenar: str,
-    formato: str,
-    convert_raw_m3_to_millions: bool,
-) -> Image.Image:
+def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atual: str,
+                   ordenar: str, formato: str, convert_raw_m3_to_millions: bool) -> Image.Image:
 
     if mode == "Feed (1080x1350)":
         try:
@@ -423,9 +367,10 @@ def generate_image(
     dark = (15, 23, 42, 255)
     gray = (71, 85, 105, 255)
 
-    green_bg = (220, 252, 231, 255)
-    green_bd = (16, 185, 129, 255)
-    green_tx = (5, 150, 105, 255)
+    # POSITIVO agora AZUL
+    blue_bg = (219, 234, 254, 255)      # azul bem claro
+    blue_bd = (59, 130, 246, 255)       # azul forte
+    blue_tx = (29, 78, 216, 255)        # azul escuro
 
     red_bg = (255, 241, 242, 255)
     red_bd = (251, 113, 133, 255)
@@ -524,7 +469,7 @@ def generate_image(
         is_neg = (not pd.isna(var_m)) and (float(var_m) < 0)
 
         if is_pos:
-            bg, bd, tx = green_bg, green_bd, green_tx
+            bg, bd, tx = blue_bg, blue_bd, blue_tx
             up_arrow = True
             base_name = f_name_pos_base
             base_line = f_line_pos_base
@@ -559,9 +504,9 @@ def generate_image(
         else:
             muni_y = name_y2
 
-        # MUNICÍPIO logo abaixo do nome
+        # MUNICÍPIO com prefixo
         f_mun = get_font(14 if big else 13, False)
-        muni_txt = municipio.upper()
+        muni_txt = f"Município: {municipio}"
         draw.text((x + 14, muni_y), muni_txt, fill=(71, 85, 105, 255), font=f_mun)
 
         f_var = get_font(base_var, True)
@@ -606,9 +551,6 @@ def generate_image(
     return img.convert("RGB") if formato.upper() == "JPG" else img
 
 
-# -----------------------------
-# Streamlit
-# -----------------------------
 def main():
     st.set_page_config(
         page_title="Reservatórios - Card Generator",
@@ -644,7 +586,7 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("Upload CSV, KPIs em pílulas, bacia destacada, e município no card.")
+    st.caption("Cards positivos em azul, negativos em vermelho, e município padronizado.")
     st.divider()
 
     with st.sidebar:
@@ -736,7 +678,6 @@ def main():
             mime=mime,
             use_container_width=True
         )
-
         st.success("Pronto.")
 
     st.caption("Para Feed com layout, mantenha base_card.png na mesma pasta do app.py.")
