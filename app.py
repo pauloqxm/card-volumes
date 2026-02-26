@@ -1,9 +1,14 @@
 # =============================================================
-#  app.py  |  Monitoramento de Reservatórios — Card Generator
-#  GF Informática  |  Paulo Ferreira
-#  Atualizado: unidades (m com ponto), milhões/m³, positivos em
-#  destaque, negativos abaixo, fonte via Gerência, horário
-#  Fortaleza-CE, upload CSV
+#  app.py  |  Monitoramento de Reservatórios - Card Generator
+#  GF Informática  |  Pedro Ferreira
+#
+#  Melhorias incluídas
+#  1. Quebra automática do nome em 2 linhas, sem cortar
+#  2. Opção para converter m³ bruto -> milhões/m³
+#  3. Modo Stories 1080x1920 com fonte maior
+#  4. KPIs no card (Total, Subiram, Desceram)
+#  5. Título não é mais desenhado no layout Feed (já existe na arte base)
+#  6. Nova coluna B: Bacia. Mostra após "Comparativo"
 # =============================================================
 
 import streamlit as st
@@ -26,9 +31,9 @@ DEFAULT_SHEET_CSV = (
 TZ_FORTALEZA = ZoneInfo("America/Fortaleza")
 
 
-# ─────────────────────────────────────────────────────────────
-#  FONTES
-# ─────────────────────────────────────────────────────────────
+# -----------------------------
+# Fontes
+# -----------------------------
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     paths_bold = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -57,27 +62,33 @@ def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
-# ─────────────────────────────────────────────────────────────
-#  PARSER ROBUSTO
-# ─────────────────────────────────────────────────────────────
+# -----------------------------
+# Parser robusto de número
+# -----------------------------
 def smart_to_float(x):
     if pd.isna(x):
         return None
     s = str(x).strip()
     if s == "":
         return None
-    s = s.replace("m³", "").replace("m3", "").replace("m", "").replace("%", "")
+
+    s = s.replace("m³", "").replace("m3", "").replace("%", "")
     s = s.replace(" ", "")
     s = re.sub(r"[^0-9\-\+\,\.]", "", s)
 
     if s.count(",") > 0 and s.count(".") > 0:
+        # decide decimal pelo último separador
         if s.rfind(",") > s.rfind("."):
+            # 1.234,56
             s = s.replace(".", "").replace(",", ".")
         else:
+            # 1,234.56
             s = s.replace(",", "")
     elif s.count(",") > 0 and s.count(".") == 0:
+        # 1234,56
         s = s.replace(",", ".")
     else:
+        # 1.234.567
         if s.count(".") > 1:
             s = s.replace(".", "")
 
@@ -91,11 +102,11 @@ def to_num_series(series: pd.Series) -> pd.Series:
     return pd.to_numeric(series.map(smart_to_float), errors="coerce")
 
 
-# ─────────────────────────────────────────────────────────────
-#  FORMATAÇÃO FINAL (EXATAMENTE COMO TU PEDIU)
-# ─────────────────────────────────────────────────────────────
+# -----------------------------
+# Formatação final
+# -----------------------------
 def fmt_m_2dp_dot(v) -> str:
-    """0,2 -> 0.20 m (ponto e 2 casas)."""
+    # 0,2 -> 0.20 m
     if pd.isna(v):
         return "N/A"
     try:
@@ -104,16 +115,20 @@ def fmt_m_2dp_dot(v) -> str:
         return "N/A"
 
 
-def fmt_milhoes_br(v) -> str:
+def fmt_milhoes_br(v, convert_raw_m3_to_millions: bool) -> str:
     """
-    8,000 -> 8,00 milhões/m³
-    428,17 -> 428,17 milhões/m³
-    AQUI assume que o valor já está em milhões (como no teu exemplo).
+    Se convert_raw_m3_to_millions=True:
+      assume que o valor vem em m³ e divide por 1.000.000
+    Se False:
+      assume que já vem em milhões (como 428,17)
     """
     if pd.isna(v):
         return "N/A"
     try:
-        s = f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        val = float(v)
+        if convert_raw_m3_to_millions:
+            val = val / 1_000_000.0
+        s = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         return f"{s} milhões/m³"
     except:
         return "N/A"
@@ -123,15 +138,14 @@ def fmt_pct_br(v) -> str:
     if pd.isna(v):
         return "N/A"
     try:
-        s = f"{float(v):.1f}".replace(".", ",")
-        return s
+        return f"{float(v):.1f}".replace(".", ",")
     except:
         return "N/A"
 
 
-# ─────────────────────────────────────────────────────────────
-#  DESENHO
-# ─────────────────────────────────────────────────────────────
+# -----------------------------
+# Desenho utilitários
+# -----------------------------
 def draw_rounded_rect(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
                       r: int, fill, outline=None, width: int = 2):
     draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=fill, outline=outline, width=width)
@@ -152,9 +166,89 @@ def draw_arrow(draw: ImageDraw.ImageDraw, x: int, y: int, up: bool, size: int, c
     draw.rectangle(shaft, fill=color)
 
 
-# ─────────────────────────────────────────────────────────────
-#  LEITURA: GOOGLE SHEETS / UPLOAD CSV
-# ─────────────────────────────────────────────────────────────
+def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return int(bbox[2] - bbox[0])
+
+
+def wrap_name_two_lines(draw: ImageDraw.ImageDraw, name: str, max_width: int,
+                        base_font_size: int, bold: bool) -> tuple[str, str, ImageFont.FreeTypeFont]:
+    """
+    Quebra em 2 linhas, tentando não cortar.
+    Estratégia:
+      - tenta encaixar com font size base
+      - se não encaixar, reduz a fonte até o mínimo
+      - se ainda não couber, última saída: coloca "…" no fim da 2ª linha
+    """
+    name = (name or "").strip()
+    words = [w for w in re.split(r"\s+", name) if w]
+    if not words:
+        font = get_font(base_font_size, bold=bold)
+        return "N/A", "", font
+
+    min_font = max(12, base_font_size - 6)
+    size = base_font_size
+
+    while size >= min_font:
+        font = get_font(size, bold=bold)
+
+        # tenta montar 2 linhas por palavras
+        line1 = ""
+        line2 = ""
+        i = 0
+
+        while i < len(words):
+            test = (line1 + " " + words[i]).strip()
+            if text_width(draw, test, font) <= max_width:
+                line1 = test
+                i += 1
+            else:
+                break
+
+        while i < len(words):
+            test = (line2 + " " + words[i]).strip()
+            if text_width(draw, test, font) <= max_width:
+                line2 = test
+                i += 1
+            else:
+                break
+
+        # se coube tudo em 2 linhas, sucesso
+        if i == len(words):
+            return line1, line2, font
+
+        # se não coube, tenta fonte menor
+        size -= 1
+
+    # fallback: força elipse na 2ª linha
+    font = get_font(min_font, bold=bold)
+    # monta linha1 e linha2 mesmo assim
+    line1 = ""
+    i = 0
+    while i < len(words):
+        test = (line1 + " " + words[i]).strip()
+        if text_width(draw, test, font) <= max_width:
+            line1 = test
+            i += 1
+        else:
+            break
+
+    line2 = ""
+    while i < len(words):
+        test = (line2 + " " + words[i]).strip()
+        if text_width(draw, test + "…", font) <= max_width:
+            line2 = test
+            i += 1
+        else:
+            break
+    if line2:
+        line2 = line2 + "…"
+    return line1, line2, font
+
+
+# -----------------------------
+# Leitura dados
+# -----------------------------
 @st.cache_data(ttl=300)
 def load_csv_from_url(url: str) -> pd.DataFrame:
     resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
@@ -171,6 +265,13 @@ def load_csv_from_upload(file) -> pd.DataFrame:
 
 
 def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    Agora com nova coluna:
+    A Gerência
+    B Bacia
+    C Nome do reservatório
+    Demais permanecem por nome, não por índice
+    """
     cols = list(df_raw.columns)
 
     def find_col_exact(name: str):
@@ -179,11 +280,14 @@ def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
                 return c
         return None
 
+    # Período pelas colunas E e F (índices 4 e 5 continuam sendo as datas no cabeçalho)
     date_anterior = cols[4] if len(cols) > 4 else ""
     date_atual = cols[5] if len(cols) > 5 else ""
 
     col_ger = find_col_exact("Gerência")
-    col_nome = find_col_exact("Nome do reservatório") or (cols[1] if len(cols) > 1 else cols[0])
+    col_bacia = find_col_exact("Bacia")
+    col_nome = find_col_exact("Nome do reservatório") or (cols[2] if len(cols) > 2 else cols[0])
+
     col_var_m = find_col_exact("Variação em m")
     col_var_m3 = find_col_exact("Variação em m³") or find_col_exact("Variação em m3")
     col_vol = find_col_exact("Volume atual")
@@ -194,6 +298,7 @@ def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     df = pd.DataFrame({
         "gerencia": df_raw[col_ger].astype(str).str.strip() if col_ger else "N/A",
+        "bacia": df_raw[col_bacia].astype(str).str.strip() if col_bacia else "N/A",
         "nome": df_raw[col_nome].astype(str).str.strip(),
         "data_anterior": date_anterior,
         "data_atual": date_atual,
@@ -206,9 +311,9 @@ def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     })
 
     df = df[
-        df["nome"].notna() &
-        (df["nome"].astype(str).str.strip() != "") &
-        (~df["nome"].astype(str).str.lower().isin(["nan", "none", "n/a"]))
+        df["nome"].notna()
+        & (df["nome"].astype(str).str.strip() != "")
+        & (~df["nome"].astype(str).str.lower().isin(["nan", "none", "n/a"]))
     ].reset_index(drop=True)
 
     if df["variacao_m"].isna().all():
@@ -226,9 +331,7 @@ def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 
 def build_fonte_gerencia(df: pd.DataFrame) -> str:
-    if "gerencia" not in df.columns:
-        return "Fonte: N/A"
-    uniques = [g for g in df["gerencia"].dropna().astype(str).str.strip().unique().tolist() if g]
+    uniques = [g for g in df.get("gerencia", pd.Series([])).dropna().astype(str).str.strip().unique().tolist() if g]
     if not uniques:
         return "Fonte: N/A"
     if len(uniques) <= 3:
@@ -236,20 +339,79 @@ def build_fonte_gerencia(df: pd.DataFrame) -> str:
     return "Fonte: " + " • ".join(uniques[:3]) + f" • +{len(uniques) - 3}"
 
 
-# ─────────────────────────────────────────────────────────────
-#  IMAGEM FINAL (18 cards)
-# ─────────────────────────────────────────────────────────────
-def generate_image_layout(df_all: pd.DataFrame, titulo: str, date_anterior: str, date_atual: str,
-                          ordenar: str, formato: str) -> Image.Image:
-    try:
-        base = Image.open(BASE_LAYOUT_PATH).convert("RGBA")
-    except Exception:
-        base = Image.new("RGBA", (1080, 1350), (255, 255, 255, 255))
+def build_bacia_label(df: pd.DataFrame) -> str:
+    uniques = [b for b in df.get("bacia", pd.Series([])).dropna().astype(str).str.strip().unique().tolist() if b]
+    if not uniques:
+        return "Bacia: N/A"
+    if len(uniques) == 1:
+        return uniques[0]
+    if len(uniques) <= 3:
+        return " / ".join(uniques)
+    return " / ".join(uniques[:3]) + f" / +{len(uniques) - 3}"
 
-    W, H = base.size
-    img = base.copy()
-    draw = ImageDraw.Draw(img)
 
+# -----------------------------
+# KPIs no card
+# -----------------------------
+def draw_kpis(draw: ImageDraw.ImageDraw, x: int, y: int, total: int, up: int, down: int,
+              big: bool):
+    # chips compactos
+    bg = (241, 245, 249, 255)
+    bd = (148, 163, 184, 255)
+    tx = (15, 23, 42)
+
+    w = 260 if big else 220
+    h = 58 if big else 46
+    gap = 14
+
+    f_lab = get_font(20 if big else 16, True)
+    f_val = get_font(28 if big else 22, True)
+
+    items = [("Total", total), ("Subiram", up), ("Desceram", down)]
+
+    for i, (lab, val) in enumerate(items):
+        cx = x + i * (w + gap)
+        draw_rounded_rect(draw, cx, y, w, h, 18, fill=bg, outline=bd, width=2)
+        draw.text((cx + 16, y + 10), lab, fill=tx, font=f_lab)
+        draw.text((cx + w - 16, y + 8), str(val), fill=tx, font=f_val, anchor="ra")
+
+
+# -----------------------------
+# Geração de imagem
+# -----------------------------
+def generate_image(
+    df_all: pd.DataFrame,
+    mode: str,
+    date_anterior: str,
+    date_atual: str,
+    ordenar: str,
+    formato: str,
+    convert_raw_m3_to_millions: bool,
+) -> Image.Image:
+    """
+    mode:
+      - "Feed (1080x1350)" usa base_card.png e não desenha o título
+      - "Stories (1080x1920)" gera base branca e desenha título grande
+    """
+
+    if mode == "Feed (1080x1350)":
+        try:
+            base = Image.open(BASE_LAYOUT_PATH).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1080, 1350), (255, 255, 255, 255))
+        W, H = base.size
+        img = base.copy()
+        draw = ImageDraw.Draw(img)
+        big = False
+        cols_grid, rows_grid = 3, 6
+    else:
+        W, H = 1080, 1920
+        img = Image.new("RGBA", (W, H), (255, 255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        big = True
+        cols_grid, rows_grid = 2, 9
+
+    # cores
     dark = (15, 23, 42)
     gray = (71, 85, 105)
 
@@ -265,52 +427,75 @@ def generate_image_layout(df_all: pd.DataFrame, titulo: str, date_anterior: str,
     neutral_bd = (148, 163, 184, 255)
     neutral_tx = (51, 65, 85, 255)
 
-    f_title = get_font(58, True)
-    f_sub = get_font(28, False)
-    f_legend = get_font(24, True)
+    # fontes (stories maiores)
+    f_title = get_font(66 if big else 0, True)
+    f_sub = get_font(34 if big else 28, False)
+    f_legend = get_font(28 if big else 24, True)
 
-    f_name_pos = get_font(18, True)
-    f_line_pos = get_font(15, False)
-    f_var_pos = get_font(18, True)
+    f_name_pos_base = 22 if big else 18
+    f_line_pos_base = 17 if big else 15
+    f_var_pos_base = 22 if big else 18
 
-    f_name_neg = get_font(16, True)
-    f_line_neg = get_font(13, False)
-    f_var_neg = get_font(16, True)
+    f_name_neg_base = 20 if big else 16
+    f_line_neg_base = 15 if big else 13
+    f_var_neg_base = 20 if big else 16
 
     pad = 70
-    y = 70
-    draw.text((pad, y), titulo, fill=dark, font=f_title)
-    y += 80
 
+    # contagens
+    total = int(len(df_all))
+    up = int((df_all["variacao_m"] > 0).sum()) if "variacao_m" in df_all.columns else 0
+    down = int((df_all["variacao_m"] < 0).sum()) if "variacao_m" in df_all.columns else 0
+
+    # bacia
+    bacia_txt = build_bacia_label(df_all)
+
+    # header
+    y = 70
+    if mode != "Feed (1080x1350)":
+        # stories desenha título, feed não desenha porque já existe na base
+        draw.text((pad, y), "Monitoramento dos Reservatórios", fill=dark, font=f_title)
+        y += 92
+
+    # linha do comparativo com bacia logo após a palavra
     period_text = ""
     if str(date_anterior).strip() and str(date_atual).strip():
-        period_text = f"Comparativo {date_anterior} até {date_atual}"
+        period_text = f"Comparativo {bacia_txt}  {date_anterior} até {date_atual}"
     elif str(date_atual).strip():
-        period_text = f"Data de referência: {date_atual}"
-
-    if period_text:
-        draw.text((pad, y), period_text, fill=gray, font=f_sub)
-        y += 52
+        period_text = f"Comparativo {bacia_txt}  referência {date_atual}"
     else:
-        y += 12
+        period_text = f"Comparativo {bacia_txt}"
 
-    chip_y = y + 8
-    chip_h = 40
+    # no feed, o y precisa ficar mais baixo por causa do título já no layout
+    if mode == "Feed (1080x1350)":
+        # ajusta para o espaço do layout base
+        y = 150
 
-    draw_rounded_rect(draw, pad, chip_y, 230, chip_h, 18, fill=green_bg, outline=green_bd, width=2)
-    draw_arrow(draw, pad + 16, chip_y + 8, True, 22, green_tx)
-    draw.text((pad + 46, chip_y + 6), "Subiu", fill=green_tx, font=f_legend)
+    draw.text((pad, y), period_text, fill=gray, font=f_sub)
+    y += 56 if big else 52
 
-    draw_rounded_rect(draw, pad + 245, chip_y, 230, chip_h, 18, fill=red_bg, outline=red_bd, width=2)
-    draw_arrow(draw, pad + 261, chip_y + 8, False, 22, red_tx)
-    draw.text((pad + 291, chip_y + 6), "Desceu", fill=red_tx, font=f_legend)
+    # KPIs no card
+    draw_kpis(draw, pad, y, total=total, up=up, down=down, big=big)
+    y += (86 if big else 72)
+
+    # legenda
+    chip_y = y
+    chip_h = 46 if big else 40
+
+    draw_rounded_rect(draw, pad, chip_y, 260 if big else 230, chip_h, 18, fill=green_bg, outline=green_bd, width=2)
+    draw_arrow(draw, pad + 16, chip_y + 10, True, 24 if big else 22, green_tx)
+    draw.text((pad + 52, chip_y + 8), "Subiu", fill=green_tx, font=f_legend)
+
+    draw_rounded_rect(draw, pad + (280 if big else 245), chip_y, 260 if big else 230, chip_h, 18, fill=red_bg, outline=red_bd, width=2)
+    draw_arrow(draw, pad + (296 if big else 261), chip_y + 10, False, 24 if big else 22, red_tx)
+    draw.text((pad + (332 if big else 291), chip_y + 8), "Desceu", fill=red_tx, font=f_legend)
 
     y = chip_y + chip_h + 18
     draw.line((pad, y, W - pad, y), fill=(226, 232, 240, 255), width=3)
     y += 26
 
+    # ordenação e agrupamento
     df = df_all.copy()
-
     df_pos = df[df["variacao_m"] > 0].copy()
     df_neg = df[df["variacao_m"] < 0].copy()
     df_zero = df[df["variacao_m"] == 0].copy()
@@ -327,17 +512,17 @@ def generate_image_layout(df_all: pd.DataFrame, titulo: str, date_anterior: str,
         df_neg = tmp[tmp["variacao_m"] < 0]
         df_zero = tmp[tmp["variacao_m"] == 0]
 
+    # regra visual: positivos primeiro (destaque), depois negativos (menos destaque), depois zeros
     ordered = pd.concat([df_pos, df_neg, df_zero], ignore_index=True).head(18).reset_index(drop=True)
 
-    cols_grid = 3
-    rows_grid = 6
-    gap_x = 18
-    gap_y = 16
+    # grid
+    gap_x = 18 if not big else 18
+    gap_y = 16 if not big else 16
 
     grid_x = pad
     grid_y = y
     grid_w = W - 2 * pad
-    grid_h = H - grid_y - 95
+    grid_h = H - grid_y - (110 if big else 95)
 
     card_w = int((grid_w - (cols_grid - 1) * gap_x) / cols_grid)
     card_h = int((grid_h - (rows_grid - 1) * gap_y) / rows_grid)
@@ -354,45 +539,63 @@ def generate_image_layout(df_all: pd.DataFrame, titulo: str, date_anterior: str,
 
         if is_pos:
             bg, bd, tx = green_bg, green_bd, green_tx
-            up = True
-            f_name, f_line, f_var = f_name_pos, f_line_pos, f_var_pos
+            up_arrow = True
+            base_name = f_name_pos_base
+            base_line = f_line_pos_base
+            base_var = f_var_pos_base
         elif is_neg:
             bg, bd, tx = red_bg, red_bd, red_tx
-            up = False
-            f_name, f_line, f_var = f_name_neg, f_line_neg, f_var_neg
+            up_arrow = False
+            base_name = f_name_neg_base
+            base_line = f_line_neg_base
+            base_var = f_var_neg_base
         else:
             bg, bd, tx = neutral_bg, neutral_bd, neutral_tx
-            up = True
-            f_name, f_line, f_var = f_name_neg, f_line_neg, f_var_neg
+            up_arrow = True
+            base_name = f_name_neg_base
+            base_line = f_line_neg_base
+            base_var = f_var_neg_base
 
         draw_rounded_rect(draw, x, y, card_w, card_h, 22, fill=bg, outline=bd, width=2)
 
+        # rank
         rank_w = 44
         draw_rounded_rect(draw, x + card_w - rank_w - 10, y + 10, rank_w, 30, 14, fill=bd, outline=None, width=0)
         draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1),
                   fill=(255, 255, 255), font=get_font(16, True), anchor="mm")
 
-        nome_show = nome.upper()
-        if len(nome_show) > 18:
-            nome_show = nome_show[:18] + "…"
-        draw.text((x + 14, y + 12), nome_show, fill=(15, 23, 42), font=f_name)
+        # nome em 2 linhas, sem cortar
+        name_area_w = card_w - 28 - 54  # espaço do rank e margem
+        line1, line2, f_name = wrap_name_two_lines(draw, nome.upper(), name_area_w, base_name, True)
+        draw.text((x + 14, y + 12), line1, fill=dark, font=f_name)
+        if line2:
+            draw.text((x + 14, y + 12 + (f_name.size + 2)), line2, fill=dark, font=f_name)
 
+        # var m com seta
+        f_var = get_font(base_var, True)
         arrow_x = x + 14
-        arrow_y = y + 42
-        draw_arrow(draw, arrow_x, arrow_y, up, 20, tx)
+        arrow_y = y + (56 if big else 52)
+        draw_arrow(draw, arrow_x, arrow_y, up_arrow, 22 if big else 20, tx)
 
-        # Variação em m (ponto e 2 casas)
-        var_txt = "N/A" if pd.isna(var_m) else f"{'+' if float(var_m) > 0 else ''}{fmt_m_2dp_dot(var_m)}"
-        draw.text((x + 40, y + 40), var_txt, fill=tx, font=f_var)
+        # var em m: ponto e 2 casas
+        if pd.isna(var_m):
+            var_txt = "N/A"
+        else:
+            sign = "+" if float(var_m) > 0 else ""
+            var_txt = f"{sign}{fmt_m_2dp_dot(var_m)}"
 
-        # Variação em m³ e Volume atual em milhões/m³
-        l1 = f"Var. m³: {fmt_milhoes_br(var_m3)}"
-        l2 = f"Vol: {fmt_milhoes_br(vol)}"
+        draw.text((x + 44, arrow_y - 2), var_txt, fill=tx, font=f_var)
+
+        # linhas
+        f_line = get_font(base_line, False)
+        l1 = f"Var. m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
+        l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
         l3 = f"%: {fmt_pct_br(pct)}"
 
-        draw.text((x + 14, y + 68), l1, fill=(51, 65, 85), font=f_line)
-        draw.text((x + 14, y + 88), l2, fill=(51, 65, 85), font=f_line)
-        draw.text((x + 14, y + 108), l3, fill=(51, 65, 85), font=f_line)
+        base_y = y + (86 if big else 76)
+        draw.text((x + 14, base_y), l1, fill=(51, 65, 85), font=f_line)
+        draw.text((x + 14, base_y + (22 if big else 20)), l2, fill=(51, 65, 85), font=f_line)
+        draw.text((x + 14, base_y + (44 if big else 40)), l3, fill=(51, 65, 85), font=f_line)
 
     for i in range(min(18, len(ordered))):
         ri = i // cols_grid
@@ -401,11 +604,12 @@ def generate_image_layout(df_all: pd.DataFrame, titulo: str, date_anterior: str,
         cy = grid_y + ri * (card_h + gap_y)
         draw_item(i, ordered.iloc[i], cx, cy)
 
+    # rodapé
     fonte_txt = build_fonte_gerencia(df_all)
-
-    foot_y = H - 70
+    foot_y = H - (72 if big else 70)
     draw.line((pad, foot_y - 18, W - pad, foot_y - 18), fill=(226, 232, 240, 255), width=2)
-    f_foot = get_font(22, False)
+
+    f_foot = get_font(26 if big else 22, False)
     draw.text((pad, foot_y), fonte_txt, fill=(100, 116, 139), font=f_foot)
 
     ts = datetime.now(TZ_FORTALEZA).strftime("%d/%m/%Y %H:%M")
@@ -414,12 +618,12 @@ def generate_image_layout(df_all: pd.DataFrame, titulo: str, date_anterior: str,
     return img.convert("RGB") if formato.upper() == "JPG" else img
 
 
-# ─────────────────────────────────────────────────────────────
-#  STREAMLIT
-# ─────────────────────────────────────────────────────────────
+# -----------------------------
+# Streamlit
+# -----------------------------
 def main():
     st.set_page_config(
-        page_title="Reservatórios — Card Generator",
+        page_title="Reservatórios - Card Generator",
         page_icon="💧",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -452,7 +656,7 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("Formato final: variação m com ponto. Variação m³ e Volume em milhões/m³.")
+    st.caption("Agora com quebra de nome em 2 linhas, modo Stories, KPI no card, Bacia no comparativo e opção m³ bruto -> milhões.")
     st.divider()
 
     with st.sidebar:
@@ -460,7 +664,6 @@ def main():
         st.divider()
 
         fonte = st.radio("Fonte de dados", ["Google Sheets", "Upload CSV"], index=0)
-
         uploaded = None
         sheet_url = DEFAULT_SHEET_CSV
 
@@ -471,19 +674,28 @@ def main():
 
         st.divider()
 
-        titulo_custom = st.text_input("📝 Título", value="Monitoramento dos Reservatórios")
+        mode = st.selectbox("Formato", ["Feed (1080x1350)", "Stories (1080x1920)"], index=0)
         ordenar = st.selectbox(
             "Ordenação",
             ["Manter ordem", "Maior variação absoluta", "Maior variação positiva", "Maior variação negativa"],
             index=0
         )
-        formato = st.selectbox("🖼️ Formato de saída", ["PNG", "JPG"])
-        debug = st.toggle("🔍 Mostrar prévia do CSV", value=False)
+        formato = st.selectbox("Saída", ["PNG", "JPG"], index=0)
+
+        convert_raw = st.checkbox(
+            "Converter m³ bruto para milhões/m³",
+            value=False,
+            help="Marque se a planilha vier com valores em m³ (ex: 8000000). Desmarque se já vier em milhões (ex: 8,00)."
+        )
+
+        debug = st.toggle("Mostrar prévia", value=False)
 
         st.divider()
-        if st.button("🔄 Atualizar dados", use_container_width=True):
+        if st.button("Atualizar dados", use_container_width=True):
             load_csv_from_url.clear()
             st.rerun()
+
+        st.caption("GF Informática")
 
     try:
         if fonte == "Upload CSV":
@@ -501,13 +713,13 @@ def main():
         st.stop()
 
     total = len(df_proc)
-    pos = int((df_proc["variacao_m"] > 0).sum()) if "variacao_m" in df_proc.columns else 0
-    neg = int((df_proc["variacao_m"] < 0).sum()) if "variacao_m" in df_proc.columns else 0
+    up = int((df_proc["variacao_m"] > 0).sum()) if "variacao_m" in df_proc.columns else 0
+    down = int((df_proc["variacao_m"] < 0).sum()) if "variacao_m" in df_proc.columns else 0
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("💾 Total", f"{total}")
-    c2.metric("📈 Subiram", f"{pos}")
-    c3.metric("📉 Desceram", f"{neg}")
+    c1.metric("Total", total)
+    c2.metric("Subiram", up)
+    c3.metric("Desceram", down)
 
     if debug:
         st.subheader("Prévia processada")
@@ -515,7 +727,7 @@ def main():
 
     st.divider()
 
-    if st.button("🎨 Gerar imagem do card", type="primary", use_container_width=True):
+    if st.button("🎨 Gerar imagem", type="primary", use_container_width=True):
         if df_proc.empty:
             st.warning("Sem dados para renderizar.")
             return
@@ -524,16 +736,17 @@ def main():
         d_atu = info.get("periodo", {}).get("atual", "")
 
         with st.spinner("Renderizando..."):
-            img_final = generate_image_layout(
+            img_final = generate_image(
                 df_all=df_proc,
-                titulo=titulo_custom,
+                mode=mode,
                 date_anterior=d_ant,
                 date_atual=d_atu,
                 ordenar=ordenar,
-                formato=formato
+                formato=formato,
+                convert_raw_m3_to_millions=convert_raw
             )
 
-        st.image(img_final, caption="Preview. 1080×1350 px", use_container_width=True)
+        st.image(img_final, caption=f"Preview {mode}", use_container_width=True)
 
         buf = BytesIO()
         save_fmt = "JPEG" if formato.upper() == "JPG" else "PNG"
@@ -546,7 +759,8 @@ def main():
         buf.seek(0)
 
         ts_name = datetime.now(TZ_FORTALEZA).strftime("%Y%m%d_%H%M%S")
-        fname = f"monitoramento_reservatorios_{ts_name}.{formato.lower()}"
+        fname = f"monitoramento_reservatorios_{'stories' if 'Stories' in mode else 'feed'}_{ts_name}.{formato.lower()}"
+
         st.download_button(
             label=f"📥 Baixar ({formato})",
             data=buf,
@@ -555,9 +769,9 @@ def main():
             use_container_width=True
         )
 
-        st.success("Pronto. Unidades ajustadas do jeito que tu pediu.")
+        st.success("Pronto.")
 
-    st.caption("Coloque base_card.png na mesma pasta do app.py para manter o layout.")
+    st.caption("Para Feed com layout, mantenha base_card.png na mesma pasta do app.py.")
 
 
 if __name__ == "__main__":
