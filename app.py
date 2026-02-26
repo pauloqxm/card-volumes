@@ -1,6 +1,8 @@
 # =============================================================
 #  app.py  |  Monitoramento de Reservatórios — Card Generator
 #  GF Informática  |  Paulo Ferreira
+#  Atualizado: layout por base_card.png, 18 reservatórios,
+#  positivos e negativos, upload CSV
 # =============================================================
 
 import streamlit as st
@@ -8,9 +10,19 @@ import pandas as pd
 import requests
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
 from datetime import datetime
 import math
+import re
+
+# Caminho da imagem de layout (mesmo diretório do app.py)
+BASE_LAYOUT_PATH = "base_card.png"
+
+# Link padrão do Google Sheets
+DEFAULT_SHEET_CSV = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1fbaYqjee8h4dAA8ew0RXbHOKdnSDoHIB2xPpdveYMDU"
+    "/export?format=csv&gid=0"
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -18,22 +30,21 @@ import math
 # ─────────────────────────────────────────────────────────────
 
 def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    """Carrega fonte TTF com fallback para múltiplos sistemas operacionais."""
     paths_bold = [
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
-        '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
-        'C:/Windows/Fonts/arialbd.ttf',
-        '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
-        '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
     ]
     paths_regular = [
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
-        'C:/Windows/Fonts/arial.ttf',
-        '/System/Library/Fonts/Supplemental/Arial.ttf',
-        '/usr/share/fonts/TTF/DejaVuSans.ttf',
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
     ]
     for path in (paths_bold if bold else paths_regular):
         try:
@@ -47,343 +58,344 @@ def get_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 
 
 # ─────────────────────────────────────────────────────────────
-#  FORMATAÇÃO DE NÚMEROS (PT-BR)
+#  FORMATAÇÃO PT-BR
 # ─────────────────────────────────────────────────────────────
 
-def format_number(value, decimals: int = 0,
-                  prefix: str = '', suffix: str = '') -> str:
-    """Formata número no padrão brasileiro: 1.234.567,89"""
+def format_number(value, decimals: int = 0, prefix: str = "", suffix: str = "") -> str:
     try:
         if pd.isna(value):
-            return 'N/A'
+            return "N/A"
         val = float(value)
         if decimals > 0:
-            formatted = (f"{val:,.{decimals}f}"
-                         .replace(',', 'X')
-                         .replace('.', ',')
-                         .replace('X', '.'))
+            formatted = (
+                f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            )
         else:
-            formatted = f"{int(val):,}".replace(',', '.')
+            formatted = f"{int(round(val)):,.0f}".replace(",", ".")
         return f"{prefix}{formatted}{suffix}"
     except (ValueError, TypeError):
         return str(value)
 
 
-# ─────────────────────────────────────────────────────────────
-#  RETÂNGULO ARREDONDADO COM ANTI-ALIASING
-# ─────────────────────────────────────────────────────────────
+def to_num_series(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip()
+    s = s.str.replace("m³", "", regex=False).str.replace("m3", "", regex=False)
+    s = s.str.replace("%", "", regex=False)
+    s = s.str.replace(" ", "", regex=False)
 
-def draw_rounded_rect(base_img: Image.Image,
-                      x: int, y: int, width: int, height: int,
-                      radius: int, fill_color: tuple,
-                      border_color: tuple = None,
-                      border_width: int = 2) -> Image.Image:
-    """Desenha retângulo arredondado via máscara 4x com LANCZOS."""
-    if base_img.mode != 'RGBA':
-        base_img = base_img.convert('RGBA')
+    # se vier 1.234,56 (BR), vira 1234.56
+    # remove milhar e troca decimal
+    s = s.str.replace(".", "", regex=False)
+    s = s.str.replace(",", ".", regex=False)
 
-    scale = 4
-    mask = Image.new('L', (width * scale, height * scale), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [0, 0, width * scale - 1, height * scale - 1],
-        radius=radius * scale, fill=255
-    )
-    mask = mask.resize((width, height), Image.LANCZOS)
-
-    card_layer = Image.new('RGBA', (width, height), fill_color)
-    base_img.paste(card_layer, (x, y), mask)
-
-    if border_color:
-        border_layer = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        ImageDraw.Draw(border_layer).rounded_rectangle(
-            [0, 0, width - 1, height - 1],
-            radius=radius, outline=border_color, width=border_width
-        )
-        base_img.paste(border_layer, (x, y), border_layer)
-
-    return base_img
+    # remove lixo
+    s = s.str.replace(r"[^0-9\.\-\+]", "", regex=True)
+    return pd.to_numeric(s, errors="coerce")
 
 
 # ─────────────────────────────────────────────────────────────
-#  CARREGAMENTO DOS DADOS DO GOOGLE SHEETS
+#  DESENHO: RETÂNGULO ARREDONDADO + SETAS
+# ─────────────────────────────────────────────────────────────
+
+def draw_rounded_rect(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
+                      r: int, fill, outline=None, width: int = 2):
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=r, fill=fill, outline=outline, width=width)
+
+
+def draw_arrow(draw: ImageDraw.ImageDraw, x: int, y: int, up: bool, size: int, color):
+    # seta simples (triângulo + haste)
+    w = size
+    h = size
+    if up:
+        tri = [(x + w // 2, y), (x + w, y + h // 2), (x, y + h // 2)]
+        shaft = [x + w // 2 - max(2, w // 10), y + h // 2,
+                 x + w // 2 + max(2, w // 10), y + h]
+    else:
+        tri = [(x, y + h // 2), (x + w, y + h // 2), (x + w // 2, y + h)]
+        shaft = [x + w // 2 - max(2, w // 10), y,
+                 x + w // 2 + max(2, w // 10), y + h // 2]
+    draw.polygon(tri, fill=color)
+    draw.rectangle(shaft, fill=color)
+
+
+# ─────────────────────────────────────────────────────────────
+#  LEITURA: GOOGLE SHEETS OU CSV UPLOAD
 # ─────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
-def load_data(url: str):
+def load_csv_from_url(url: str) -> pd.DataFrame:
+    resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+    resp.raise_for_status()
+    df = pd.read_csv(BytesIO(resp.content))
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def load_csv_from_upload(file) -> pd.DataFrame:
+    df = pd.read_csv(file)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def process_df(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
-    Lê planilha do Google Sheets via exportação CSV.
-    Mapeamento de colunas por posição (robusto a mudanças de cabeçalho):
-      A(0)=nome  B(1)=capacidade  C(2)=volume_atual_m3  D(3)=percentual
-      E(4)=data_anterior  F(5)=data_atual  G(6)=variacao_m  H(7)=variacao_m3
+    Cabeçalho esperado:
+    Gerência | Nome do reservatório | Capacidade (hm³) | Cota Sangria |
+    09/02/2026 | 24/02/26 | Variação em m | Variação em m³ | Volume atual | Percentual atual
     """
+    cols = list(df_raw.columns)
+
+    def find_col_exact(name: str):
+        for c in cols:
+            if str(c).strip().lower() == name.strip().lower():
+                return c
+        return None
+
+    # Período pelas colunas E e F (índices 4 e 5)
+    date_anterior = cols[4] if len(cols) > 4 else ""
+    date_atual = cols[5] if len(cols) > 5 else ""
+
+    col_nome = find_col_exact("Nome do reservatório") or (cols[1] if len(cols) > 1 else cols[0])
+    col_var_m = find_col_exact("Variação em m")
+    col_var_m3 = find_col_exact("Variação em m³") or find_col_exact("Variação em m3")
+    col_vol = find_col_exact("Volume atual")
+    col_pct = find_col_exact("Percentual atual")
+
+    # níveis nas datas (se existirem e forem numéricos)
+    col_lvl_ant = cols[4] if len(cols) > 4 else None
+    col_lvl_atu = cols[5] if len(cols) > 5 else None
+
+    df = pd.DataFrame({
+        "nome": df_raw[col_nome].astype(str).str.strip(),
+        "data_anterior": date_anterior,
+        "data_atual": date_atual,
+        "nivel_anterior": to_num_series(df_raw[col_lvl_ant]) if col_lvl_ant else pd.Series([None] * len(df_raw)),
+        "nivel_atual": to_num_series(df_raw[col_lvl_atu]) if col_lvl_atu else pd.Series([None] * len(df_raw)),
+        "variacao_m": to_num_series(df_raw[col_var_m]) if col_var_m else pd.Series([None] * len(df_raw)),
+        "variacao_m3": to_num_series(df_raw[col_var_m3]) if col_var_m3 else pd.Series([None] * len(df_raw)),
+        "volume_atual_m3": to_num_series(df_raw[col_vol]) if col_vol else pd.Series([None] * len(df_raw)),
+        "percentual": to_num_series(df_raw[col_pct]) if col_pct else pd.Series([None] * len(df_raw)),
+    })
+
+    # limpa linhas inválidas
+    df = df[
+        df["nome"].notna() &
+        (df["nome"].astype(str).str.strip() != "") &
+        (~df["nome"].astype(str).str.lower().isin(["nan", "none", "n/a"]))
+    ].reset_index(drop=True)
+
+    # se variacao_m vier toda vazia, tenta calcular: nivel_atual - nivel_anterior
+    if df["variacao_m"].isna().all():
+        if ("nivel_anterior" in df.columns) and ("nivel_atual" in df.columns):
+            df["variacao_m"] = (df["nivel_atual"] - df["nivel_anterior"]).round(2)
+
+    # garante numéricos
+    for c in ["variacao_m", "variacao_m3", "volume_atual_m3", "percentual"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    info = {
+        "colunas": cols,
+        "shape": df_raw.shape,
+        "periodo": {"anterior": date_anterior, "atual": date_atual},
+    }
+    return df, info
+
+
+# ─────────────────────────────────────────────────────────────
+#  GERAÇÃO DA IMAGEM (BASE + GRID 18)
+# ─────────────────────────────────────────────────────────────
+
+def generate_image_layout(
+    df_all: pd.DataFrame,
+    titulo: str,
+    date_anterior: str,
+    date_atual: str,
+    ordenar: str,
+    formato: str,
+) -> Image.Image:
+    # base layout 1080x1350
     try:
-        resp = requests.get(url, timeout=15,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        df_raw = pd.read_csv(BytesIO(resp.content))
+        base = Image.open(BASE_LAYOUT_PATH).convert("RGBA")
+    except Exception:
+        base = Image.new("RGBA", (1080, 1350), (255, 255, 255, 255))
 
-        num_cols = df_raw.shape[1]
-
-        def safe_col(idx):
-            """Retorna coluna pelo índice ou série de N/A se não existir."""
-            if idx < num_cols:
-                return df_raw.iloc[:, idx]
-            return pd.Series(['N/A'] * len(df_raw))
-
-        def to_num(series):
-            return pd.to_numeric(
-                series.astype(str).str.replace(',', '.', regex=False),
-                errors='coerce'
-            )
-
-        df = pd.DataFrame({
-            'nome':           safe_col(0).astype(str).str.strip(),
-            'capacidade':     to_num(safe_col(1)),
-            'volume_atual_m3':to_num(safe_col(2)),
-            'percentual':     to_num(safe_col(3)),
-            'data_anterior':  safe_col(4).astype(str).str.strip(),
-            'data_atual':     safe_col(5).astype(str).str.strip(),
-            'variacao_m':     to_num(safe_col(6)),
-            'variacao_m3':    to_num(safe_col(7)),
-        })
-
-        # Remove linhas sem nome válido
-        df = df[
-            df['nome'].notna() &
-            (df['nome'] != '') &
-            (~df['nome'].str.lower().isin(['nan', 'none', 'n/a']))
-        ].reset_index(drop=True)
-
-        return df_raw, df, {'colunas': list(df_raw.columns),
-                            'shape': df_raw.shape}
-
-    except Exception as err:
-        st.warning(f"⚠️ Planilha indisponível: {err} — exibindo dados de exemplo.")
-        mock = pd.DataFrame({
-            'nome':           ['Açude Castanhão', 'Açude Orós',
-                               'Barragem Banabuiú', 'Açude Araras'],
-            'capacidade':     [6_700_000_000, 1_940_000_000,
-                               1_601_000_000,   891_000_000],
-            'volume_atual_m3':[2_100_000_000,   486_000_000,
-                                 640_000_000,   445_000_000],
-            'percentual':     [31.3, 25.0, 40.0, 49.9],
-            'data_anterior':  ['10/06/2025'] * 4,
-            'data_atual':     ['11/06/2025'] * 4,
-            'variacao_m':     [0.85, 0.42, 0.31, 1.10],
-            'variacao_m3':    [310_000, 52_000, 28_000, 95_000],
-        })
-        return pd.DataFrame(), mock, {'erro': str(err)}
-
-
-# ─────────────────────────────────────────────────────────────
-#  CARD INDIVIDUAL
-# ─────────────────────────────────────────────────────────────
-
-def draw_card(img: Image.Image,
-              x: int, y: int, w: int, h: int,
-              data: pd.Series, rank: int) -> Image.Image:
-    """Desenha um card verde com todas as informações do reservatório."""
-
-    # Fundo e borda do card
-    img = draw_rounded_rect(
-        img, x, y, w, h,
-        radius=14,
-        fill_color=(0, 70, 35, 215),
-        border_color=(0, 200, 83, 255),
-        border_width=2
-    )
-    # Glow externo sutil
-    img = draw_rounded_rect(
-        img, x - 2, y - 2, w + 4, h + 4,
-        radius=16,
-        fill_color=(0, 0, 0, 0),
-        border_color=(105, 240, 174, 45),
-        border_width=5
-    )
-
+    W, H = base.size
+    img = base.copy()
     draw = ImageDraw.Draw(img)
 
-    # ── Badge de ranking ──────────────────────────────────
-    br = 22
-    bx = x + w - br - 12
-    by = y + 12
-    draw.ellipse([bx, by, bx + br * 2, by + br * 2], fill=(0, 200, 83))
-    draw.text((bx + br, by + br), str(rank),
-              font=get_font(18, bold=True), fill=(255, 255, 255), anchor='mm')
+    # cores
+    dark = (15, 23, 42)
+    gray = (71, 85, 105)
 
-    # ── Fontes ────────────────────────────────────────────
-    f_nome  = get_font(20, bold=True)
-    f_label = get_font(15)
-    f_valor = get_font(18, bold=True)
-    f_var   = get_font(26, bold=True)
-    f_pct   = get_font(20, bold=True)
+    green_bg = (220, 252, 231, 255)
+    green_bd = (16, 185, 129, 255)
+    green_tx = (5, 150, 105, 255)
 
-    px = x + 16
-    py = y + 14
+    red_bg = (254, 226, 226, 255)
+    red_bd = (239, 68, 68, 255)
+    red_tx = (220, 38, 38, 255)
 
-    # ── Nome ──────────────────────────────────────────────
-    nome = str(data.get('nome', 'N/A')).upper()
-    nome = (nome[:21] + '…') if len(nome) > 21 else nome
-    draw.text((px, py), nome, font=f_nome, fill=(255, 255, 255))
+    neutral_bg = (241, 245, 249, 255)
+    neutral_bd = (148, 163, 184, 255)
+    neutral_tx = (51, 65, 85, 255)
 
-    # Linha divisória
-    ly = py + 28
-    draw.line([(px, ly), (x + w - 16, ly)], fill=(0, 200, 83), width=1)
+    # fontes
+    f_title = get_font(58, bold=True)
+    f_sub = get_font(28, bold=False)
+    f_legend = get_font(24, bold=True)
 
-    # ── Variação em metros (destaque) ─────────────────────
-    var_m   = float(data.get('variacao_m', 0) or 0)
-    positiv = var_m >= 0
-    cor_var = (105, 240, 174) if positiv else (244, 100, 100)
-    seta    = '▲' if positiv else '▼'
-    sinal   = '+' if positiv else ''
+    f_name = get_font(18, bold=True)
+    f_line = get_font(15, bold=False)
+    f_var = get_font(18, bold=True)
 
-    vy = ly + 10
-    draw.text((px, vy),       seta,                          font=f_var, fill=cor_var)
-    draw.text((px + 30, vy),  f"{sinal}{format_number(var_m, 2)} m",
-              font=f_var, fill=cor_var)
-    draw.text((px, vy + 32),  "Variação do nível",
-              font=f_label, fill=(165, 214, 167))
+    # header
+    pad = 70
+    y = 70
+    draw.text((pad, y), titulo, fill=dark, font=f_title)
+    y += 80
 
-    # ── Variação em m³ ────────────────────────────────────
-    l2y    = vy + 54
-    var_m3 = float(data.get('variacao_m3', 0) or 0)
-    s3     = '+' if var_m3 >= 0 else ''
-    draw.text((px, l2y),      "Var. Volume:", font=f_label, fill=(144, 164, 174))
-    draw.text((px, l2y + 17), f"{s3}{format_number(var_m3, 0)} m³",
-              font=f_valor, fill=(224, 224, 224))
+    period_text = ""
+    if str(date_anterior).strip() and str(date_atual).strip():
+        period_text = f"Comparativo {date_anterior} até {date_atual}"
+    elif str(date_atual).strip():
+        period_text = f"Data de referência: {date_atual}"
 
-    # ── Volume atual ──────────────────────────────────────
-    l3y = l2y + 40
-    draw.text((px, l3y),      "Volume Atual:", font=f_label, fill=(144, 164, 174))
-    draw.text((px, l3y + 17),
-              f"{format_number(data.get('volume_atual_m3', 0), 0)} m³",
-              font=f_valor, fill=(224, 224, 224))
+    if period_text:
+        draw.text((pad, y), period_text, fill=gray, font=f_sub)
+        y += 52
+    else:
+        y += 12
 
-    # ── Percentual + barra ────────────────────────────────
-    l4y = l3y + 44
-    draw.text((px, l4y), "Capacidade:", font=f_label, fill=(144, 164, 174))
+    # legenda de cores
+    chip_y = y + 8
+    chip_h = 40
 
-    pct = max(0.0, min(100.0, float(data.get('percentual', 0) or 0)))
-    draw.text((x + w - 16, l4y), f"{format_number(pct, 1)}%",
-              font=f_pct, fill=(105, 240, 174), anchor='ra')
+    # chip verde
+    draw_rounded_rect(draw, pad, chip_y, 230, chip_h, 18, fill=green_bg, outline=green_bd, width=2)
+    draw_arrow(draw, pad + 16, chip_y + 8, True, 22, green_tx)
+    draw.text((pad + 46, chip_y + 6), "Subiu", fill=green_tx, font=f_legend)
 
-    bx2  = px
-    by2  = l4y + 20
-    bw2  = w - 32
-    bh2  = 8
-    draw.rounded_rectangle([bx2, by2, bx2 + bw2, by2 + bh2],
-                            radius=4, fill=(20, 45, 30))
-    fw = max(0, int(bw2 * pct / 100))
-    if fw > 0:
-        draw.rounded_rectangle([bx2, by2, bx2 + fw, by2 + bh2],
-                                radius=4, fill=(0, 200, 83))
+    # chip vermelho
+    draw_rounded_rect(draw, pad + 245, chip_y, 230, chip_h, 18, fill=red_bg, outline=red_bd, width=2)
+    draw_arrow(draw, pad + 261, chip_y + 8, False, 22, red_tx)
+    draw.text((pad + 291, chip_y + 6), "Desceu", fill=red_tx, font=f_legend)
 
+    # linha
+    y = chip_y + chip_h + 18
+    draw.line((pad, y, W - pad, y), fill=(226, 232, 240, 255), width=3)
+    y += 26
+
+    # ordenação
+    df = df_all.copy()
+
+    if ordenar == "Maior variação positiva":
+        df = df.sort_values("variacao_m", ascending=False)
+    elif ordenar == "Maior variação negativa":
+        df = df.sort_values("variacao_m", ascending=True)
+    elif ordenar == "Maior variação absoluta":
+        df = df.assign(_abs=df["variacao_m"].abs()).sort_values("_abs", ascending=False).drop(columns=["_abs"])
+    else:
+        # manter ordem
+        pass
+
+    # garante 18
+    df = df.head(18).reset_index(drop=True)
+
+    # grid 3 x 6 = 18
+    cols = 3
+    rows = 6
+    gap_x = 18
+    gap_y = 16
+
+    grid_x = pad
+    grid_y = y
+    grid_w = W - 2 * pad
+    grid_h = H - grid_y - 95
+
+    card_w = int((grid_w - (cols - 1) * gap_x) / cols)
+    card_h = int((grid_h - (rows - 1) * gap_y) / rows)
+
+    # mini-card render
+    def draw_item(ix: int, row: pd.Series, x: int, y: int):
+        nome = str(row.get("nome", "N/A")).strip()
+        var_m = row.get("variacao_m", None)
+        var_m3 = row.get("variacao_m3", None)
+        vol = row.get("volume_atual_m3", None)
+        pct = row.get("percentual", None)
+
+        # define cor
+        if pd.isna(var_m):
+            bg, bd, tx = neutral_bg, neutral_bd, neutral_tx
+            up = True
+        else:
+            if float(var_m) > 0:
+                bg, bd, tx = green_bg, green_bd, green_tx
+                up = True
+            elif float(var_m) < 0:
+                bg, bd, tx = red_bg, red_bd, red_tx
+                up = False
+            else:
+                bg, bd, tx = neutral_bg, neutral_bd, neutral_tx
+                up = True
+
+        draw_rounded_rect(draw, x, y, card_w, card_h, 22, fill=bg, outline=bd, width=2)
+
+        # rank pequeno
+        rank_w = 44
+        draw_rounded_rect(draw, x + card_w - rank_w - 10, y + 10, rank_w, 30, 14, fill=bd, outline=None, width=0)
+        draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1), fill=(255, 255, 255), font=get_font(16, True), anchor="mm")
+
+        # nome
+        nome_show = nome.upper()
+        if len(nome_show) > 18:
+            nome_show = nome_show[:18] + "…"
+        draw.text((x + 14, y + 12), nome_show, fill=(15, 23, 42), font=f_name)
+
+        # var m com seta
+        arrow_x = x + 14
+        arrow_y = y + 42
+        draw_arrow(draw, arrow_x, arrow_y, up, 20, tx)
+
+        sinal = ""
+        if not pd.isna(var_m) and float(var_m) > 0:
+            sinal = "+"
+
+        var_txt = "N/A" if pd.isna(var_m) else f"{sinal}{format_number(var_m, 2)} m"
+        draw.text((x + 40, y + 40), var_txt, fill=tx, font=f_var)
+
+        # linhas compactas
+        l1 = f"Var. m³: {'N/A' if pd.isna(var_m3) else format_number(var_m3, 0)}"
+        l2 = f"Vol: {'N/A' if pd.isna(vol) else format_number(vol, 0)} m³"
+        l3 = f"%: {'N/A' if pd.isna(pct) else format_number(pct, 1)}"
+
+        draw.text((x + 14, y + 68), l1, fill=(51, 65, 85), font=f_line)
+        draw.text((x + 14, y + 88), l2, fill=(51, 65, 85), font=f_line)
+        draw.text((x + 14, y + 108), l3, fill=(51, 65, 85), font=f_line)
+
+    # desenha os 18
+    for i in range(min(18, len(df))):
+        ri = i // cols
+        ci = i % cols
+        cx = grid_x + ci * (card_w + gap_x)
+        cy = grid_y + ri * (card_h + gap_y)
+        draw_item(i, df.iloc[i], cx, cy)
+
+    # rodapé
+    foot_y = H - 70
+    draw.line((pad, foot_y - 18, W - pad, foot_y - 18), fill=(226, 232, 240, 255), width=2)
+    f_foot = get_font(22, False)
+    draw.text((pad, foot_y), "Fonte: Monitoramento dos reservatórios", fill=(100, 116, 139), font=f_foot)
+    ts = datetime.now().strftime("%d/%m/%Y %H:%M")
+    draw.text((W - pad, foot_y), f"Gerado em {ts}", fill=(100, 116, 139), font=f_foot, anchor="ra")
+
+    # saída
+    if formato.upper() == "JPG":
+        return img.convert("RGB")
     return img
 
 
 # ─────────────────────────────────────────────────────────────
-#  GERAÇÃO DA IMAGEM PRINCIPAL (1080 × 1080)
-# ─────────────────────────────────────────────────────────────
-
-def generate_image(df_top: pd.DataFrame,
-                   date_anterior: str, date_atual: str,
-                   formato: str, titulo_custom: str) -> Image.Image:
-    """Gera card 1080×1080 com fundo gradiente e cards dos reservatórios."""
-    W, H = 1080, 1080
-
-    # ── Gradiente de fundo ────────────────────────────────
-    arr = np.zeros((H, W, 3), dtype=np.uint8)
-    for row in range(H):
-        t = row / H
-        arr[row] = [
-            int(13 + (22 - 13) * t),
-            int(27 + (38 - 27) * t),
-            int(42 + (58 - 42) * t),
-        ]
-    img = Image.fromarray(arr, 'RGB').convert('RGBA')
-
-    # ── Overlay com glows nos cantos ─────────────────────
-    ov = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(ov)
-    for cx, cy, r, alpha in [
-        (0,    0,    350, 20),
-        (W,    0,    280, 14),
-        (0,    H,    220, 12),
-        (W//2, H//2, 520, 7),
-    ]:
-        od.ellipse([cx - r, cy - r, cx + r, cy + r],
-                   fill=(79, 195, 247, alpha))
-    img = Image.alpha_composite(img, ov)
-    draw = ImageDraw.Draw(img)
-
-    # ── Ícone gota ────────────────────────────────────────
-    draw.ellipse([52, 52, 104, 104], fill=(79, 195, 247))
-    draw.polygon([(78, 34), (52, 68), (104, 68)], fill=(79, 195, 247))
-
-    # ── Título em 2 linhas ────────────────────────────────
-    palavras = titulo_custom.strip().split()
-    if len(palavras) >= 2:
-        l1 = ' '.join(palavras[:2])
-        l2 = ' '.join(palavras[2:])
-    else:
-        l1, l2 = titulo_custom, ''
-
-    draw.text((124, 42), l1,
-              font=get_font(44, bold=True), fill=(255, 255, 255))
-    if l2:
-        draw.text((124, 90), l2,
-                  font=get_font(52, bold=True), fill=(79, 195, 247))
-
-    # ── Subtítulo de período ──────────────────────────────
-    sub_y = 162 if l2 else 102
-    draw.text((55, sub_y),
-              f"Período de referência:  {date_anterior}  →  {date_atual}",
-              font=get_font(26), fill=(144, 164, 174))
-
-    # ── Linha divisória verde ─────────────────────────────
-    line_y = sub_y + 40
-    draw.rectangle([55, line_y, W - 55, line_y + 4], fill=(0, 200, 83))
-
-    # ── Layout dinâmico de cards ──────────────────────────
-    start_y  = line_y + 18
-    margin   = 55
-    gap      = 14
-    num      = min(len(df_top), 6)
-
-    if num <= 1:
-        cols = 1
-    elif num <= 4:
-        cols = 2
-    else:
-        cols = 3
-
-    rows   = math.ceil(num / cols)
-    avail_h = 985 - start_y
-    card_w  = (W - 2 * margin - (cols - 1) * gap) // cols
-    card_h  = (avail_h - (rows - 1) * gap) // rows
-
-    for i, (_, row) in enumerate(df_top.head(num).iterrows()):
-        ci = i % cols
-        ri = i // cols
-        cx = margin + ci * (card_w + gap)
-        cy = start_y + ri * (card_h + gap)
-        img = draw_card(img, cx, cy, card_w, card_h, row, i + 1)
-
-    # ── Rodapé ────────────────────────────────────────────
-    draw = ImageDraw.Draw(img)
-    draw.line([(55, 1018), (W - 55, 1018)], fill=(50, 70, 80), width=1)
-    f_foot = get_font(21)
-    draw.text((55,     1024), "📊 COGERH / SRH-CE",
-              font=f_foot, fill=(84, 110, 122))
-    ts = datetime.now().strftime('%d/%m/%Y às %H:%M')
-    draw.text((W - 55, 1024), f"Gerado em {ts}",
-              font=f_foot, fill=(84, 110, 122), anchor='ra')
-
-    return img.convert('RGB') if formato.upper() == 'JPG' else img
-
-
-# ─────────────────────────────────────────────────────────────
-#  APLICATIVO STREAMLIT
+#  STREAMLIT APP
 # ─────────────────────────────────────────────────────────────
 
 def main():
@@ -394,135 +406,156 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    st.markdown("""
-    <style>
-        .stApp               { background-color: #0a1628; color: #e0e0e0; }
-        section[data-testid="stSidebar"] { background-color: #0d1f35 !important; }
-        h1, h2, h3           { color: #4FC3F7 !important; }
-        div[data-testid="metric-container"] {
-            background: rgba(0,200,83,.08);
-            border: 1px solid rgba(0,200,83,.28);
-            border-radius: 10px; padding: 8px;
-        }
-        .stButton > button   { background:#00C853; color:#fff;
-                               border-radius:8px; font-weight:700; border:none; }
-        .stButton > button:hover { background:#00a844; }
-        .stDownloadButton > button { background:#1565C0; color:#fff;
-                                     border-radius:8px; font-weight:700; border:none; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    SHEET_URL = (
-        "https://docs.google.com/spreadsheets/d/"
-        "1fbaYqjee8h4dAA8ew0RXbHOKdnSDoHIB2xPpdveYMDU"
-        "/export?format=csv&gid=0"
+    st.markdown(
+        """
+        <style>
+            .stApp { background-color: #0a1628; color: #e0e0e0; }
+            section[data-testid="stSidebar"] { background-color: #0d1f35 !important; }
+            h1, h2, h3 { color: #4FC3F7 !important; }
+            div[data-testid="metric-container"] {
+                background: rgba(0,200,83,.08);
+                border: 1px solid rgba(0,200,83,.28);
+                border-radius: 10px;
+                padding: 8px;
+            }
+            .stButton > button {
+                background:#00C853; color:#fff; border-radius:8px;
+                font-weight:700; border:none;
+            }
+            .stButton > button:hover { background:#00a844; }
+            .stDownloadButton > button {
+                background:#1565C0; color:#fff; border-radius:8px;
+                font-weight:700; border:none;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True
     )
 
-    # ── Carregar dados ────────────────────────────────────
-    df_raw, df_proc, info = load_data(SHEET_URL)
+    st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
+    st.caption("Gera imagem 1080×1350 com 18 reservatórios, positivos e negativos. Layout baseado no arquivo base_card.png.")
+    st.divider()
 
-    # ── SIDEBAR ───────────────────────────────────────────
+    # Sidebar
     with st.sidebar:
         st.markdown("## ⚙️ Configurações")
         st.divider()
 
-        titulo_custom = st.text_input(
-            "📝 Título",
-            value="Monitoramento dos Reservatórios"
+        fonte = st.radio("Fonte de dados", ["Google Sheets", "Upload CSV"], index=0)
+
+        uploaded = None
+        sheet_url = DEFAULT_SHEET_CSV
+
+        if fonte == "Upload CSV":
+            uploaded = st.file_uploader("Envie o .csv", type=["csv"])
+            st.caption("Dica: mantenha as colunas iguais à planilha oficial.")
+        else:
+            sheet_url = st.text_input("Link CSV do Google Sheets", value=DEFAULT_SHEET_CSV)
+
+        st.divider()
+
+        titulo_custom = st.text_input("📝 Título", value="Monitoramento dos Reservatórios")
+
+        ordenar = st.selectbox(
+            "Ordenação",
+            ["Manter ordem", "Maior variação absoluta", "Maior variação positiva", "Maior variação negativa"],
+            index=1
         )
-        min_var = st.slider(
-            "📏 Variação mínima (m)",
-            min_value=0.0, max_value=5.0, value=0.1, step=0.05,
-            help="Exibe apenas reservatórios com variação ≥ este valor"
-        )
-        max_res = st.slider(
-            "🔢 Máx. reservatórios no card",
-            min_value=1, max_value=6, value=4
-        )
+
         formato = st.selectbox("🖼️ Formato de saída", ["PNG", "JPG"])
+
+        debug = st.toggle("🔍 Mostrar prévia do CSV", value=False)
+
         st.divider()
-        debug = st.toggle("🔍 Dados brutos", value=False)
-        if st.button("🔄 Atualizar planilha", use_container_width=True):
-            load_data.clear()
+        if st.button("🔄 Atualizar dados", use_container_width=True):
+            load_csv_from_url.clear()
             st.rerun()
-        st.divider()
+
         st.caption("GF Informática · Paulo Ferreira")
 
-    # ── CABEÇALHO ─────────────────────────────────────────
-    st.title("💧 Gerador de Cards — Monitoramento de Reservatórios")
-    st.caption("Lê dados em tempo real do Google Sheets e gera imagens "
-               "1080×1080 prontas para redes sociais.")
-    st.divider()
-
-    # ── FILTRO ────────────────────────────────────────────
-    df_filtrado = (
-        df_proc[df_proc['variacao_m'] >= min_var]
-        .sort_values('variacao_m', ascending=False)
-        .head(max_res)
-        .reset_index(drop=True)
-    )
-
-    # ── MÉTRICAS ──────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💾 Total carregado",   f"{len(df_proc)} reservatórios")
-    c2.metric("📈 Variação positiva", f"{len(df_proc[df_proc['variacao_m'] > 0])}")
-    c3.metric("🏆 Maior variação",    f"{format_number(df_proc['variacao_m'].max(), 2)} m")
-    c4.metric("🎯 No card",           f"{len(df_filtrado)}")
-
-    # ── DEBUG ─────────────────────────────────────────────
-    if debug:
-        with st.expander("📋 Colunas detectadas"):
-            st.write(info.get('colunas', []))
-            if not df_raw.empty:
-                st.dataframe(df_raw.head(10), use_container_width=True)
-        with st.expander("📊 Dados filtrados"):
-            st.dataframe(df_filtrado, use_container_width=True)
-
-    st.divider()
-
-    # ── BOTÃO GERAR ───────────────────────────────────────
-    if st.button("🎨 Gerar Imagem para Redes Sociais",
-                 type="primary", use_container_width=True):
-
-        if df_filtrado.empty:
-            st.warning("⚠️ Nenhum reservatório encontrado. "
-                       "Reduza a variação mínima na barra lateral.")
+    # Carregar dados
+    try:
+        if fonte == "Upload CSV":
+            if uploaded is None:
+                st.info("Envia um CSV na lateral e eu gero o card.")
+                return
+            df_raw = load_csv_from_upload(uploaded)
         else:
-            with st.spinner("🎨 Renderizando imagem..."):
-                d_ant = df_filtrado['data_anterior'].iloc[0]
-                d_atu = df_filtrado['data_atual'].iloc[0]
-                img_final = generate_image(
-                    df_top        = df_filtrado,
-                    date_anterior = d_ant,
-                    date_atual    = d_atu,
-                    formato       = formato,
-                    titulo_custom = titulo_custom,
-                )
+            df_raw = load_csv_from_url(sheet_url)
 
-            # Preview
-            st.image(img_final,
-                     caption="Preview — 1080×1080 px",
-                     use_container_width=True)
+        df_proc, info = process_df(df_raw)
 
-            # Download
-            buf = BytesIO()
-            mime_fmt = 'JPEG' if formato.upper() == 'JPG' else 'PNG'
-            img_final.save(buf, format=mime_fmt, quality=95)
-            buf.seek(0)
+    except Exception as e:
+        st.error(f"Erro carregando dados: {e}")
+        st.stop()
 
-            fname = (f"reservatorios_"
-                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                     f".{formato.lower()}")
+    # métricas
+    total = len(df_proc)
+    pos = int((df_proc["variacao_m"] > 0).sum()) if "variacao_m" in df_proc.columns else 0
+    neg = int((df_proc["variacao_m"] < 0).sum()) if "variacao_m" in df_proc.columns else 0
+    maior_pos = df_proc["variacao_m"].max() if "variacao_m" in df_proc.columns else None
+    maior_neg = df_proc["variacao_m"].min() if "variacao_m" in df_proc.columns else None
 
-            st.download_button(
-                label          = f"📥 Baixar Imagem ({formato})",
-                data           = buf,
-                file_name      = fname,
-                mime           = f"image/{'jpeg' if formato=='JPG' else 'png'}",
-                use_container_width = True,
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💾 Total", f"{total}")
+    c2.metric("📈 Subiram", f"{pos}")
+    c3.metric("📉 Desceram", f"{neg}")
+    c4.metric("🏁 Extremos", f"+{format_number(maior_pos, 2)} m | {format_number(maior_neg, 2)} m")
+
+    if debug:
+        st.subheader("Prévia do CSV")
+        st.dataframe(df_raw.head(30), use_container_width=True)
+
+    st.divider()
+
+    # Geração
+    if st.button("🎨 Gerar imagem do card", type="primary", use_container_width=True):
+        if df_proc.empty:
+            st.warning("Sem dados para renderizar.")
+            return
+
+        # precisa ter pelo menos 18 linhas, se tiver menos, mostra todas mesmo assim
+        if len(df_proc) < 18:
+            st.warning(f"Seu CSV tem {len(df_proc)} linhas. Vou renderizar mesmo assim, mas o ideal é ter 18 reservatórios.")
+
+        d_ant = info.get("periodo", {}).get("anterior", "")
+        d_atu = info.get("periodo", {}).get("atual", "")
+
+        with st.spinner("Renderizando..."):
+            img_final = generate_image_layout(
+                df_all=df_proc,
+                titulo=titulo_custom,
+                date_anterior=d_ant,
+                date_atual=d_atu,
+                ordenar=ordenar,
+                formato=formato
             )
-            st.success(f"✅ Pronto! {len(df_filtrado)} reservatório(s) exibido(s).")
+
+        st.image(img_final, caption="Preview. 1080×1350 px", use_container_width=True)
+
+        buf = BytesIO()
+        save_fmt = "JPEG" if formato.upper() == "JPG" else "PNG"
+        if save_fmt == "JPEG":
+            img_final.save(buf, format=save_fmt, quality=95, optimize=True)
+            mime = "image/jpeg"
+        else:
+            img_final.save(buf, format=save_fmt, optimize=True)
+            mime = "image/png"
+        buf.seek(0)
+
+        fname = f"monitoramento_reservatorios_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{formato.lower()}"
+        st.download_button(
+            label=f"📥 Baixar ({formato})",
+            data=buf,
+            file_name=fname,
+            mime=mime,
+            use_container_width=True
+        )
+
+        st.success("Pronto. Card gerado com positivos e negativos.")
+
+    st.caption("Obs: coloque o arquivo base_card.png na mesma pasta do app.py para manter o layout de referência.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
