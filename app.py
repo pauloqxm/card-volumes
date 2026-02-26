@@ -1,3 +1,18 @@
+# =============================================================
+#  app.py  |  Monitoramento de Reservatórios - Card Generator
+#  GF Informática  |  Pedro Ferreira
+#
+#  Atualizações nesta versão:
+#  - Comparativo com fonte pequena alinhado na base
+#  - Barra do percentual com track mais escuro + brilho, e track por tipo (positivo azul, negativo vermelho)
+#  - Açude e Município em 1 linha com reticências
+#  - Google Sheets + Upload CSV
+#  - Tema branco e sidebar azul claro
+#  - Cards positivos em azul
+#  - KPI Total / Com aporte / Sem aporte
+#  - Volume e variações em milhões/m³ (com opção de conversão)
+# =============================================================
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -408,19 +423,20 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
     if not big:
         y = 150
 
-    # ✅ Comparativo com fonte pequena (igual Município)
+    # Comparativo na base (anchor lb)
     comparativo = f"Comparativo  {date_anterior}  →  {date_atual}"
-    draw.text((pad, y), comparativo, fill=gray, font=f_small)
+    comp_top_y = y
+    comp_base_y = comp_top_y + f_small.size + 2
+    draw.text((pad, comp_base_y), comparativo, fill=gray, font=f_small, anchor="lb")
 
-    # bacia (mantém destacada)
-    bacia_y = y - (6 if big else 4)
+    # Bacia alinhada com essa faixa
+    bacia_y = comp_top_y - (6 if big else 4)
     bacia_x = draw_bacia_pill(draw, right_x=W - pad, y=bacia_y, text_value=bacia_txt, big=big)
     if bacia_x < pad + 540:
-        bacia_y2 = y + (40 if big else 36)
+        bacia_y2 = comp_top_y + (40 if big else 36)
         draw_bacia_pill(draw, right_x=W - pad, y=bacia_y2, text_value=bacia_txt, big=big)
-        y += (40 if big else 36)
 
-    y += 52 if big else 46
+    y = comp_top_y + (52 if big else 46)
 
     y = draw_kpis_row(draw, pad, y, total=total, up=up, down=down, big=big)
     y += 20
@@ -473,35 +489,46 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         if is_pos:
             bg, bd, tx = blue_bg, blue_bd, blue_tx
             up_arrow = True
+            track = (30, 64, 175, 70)
+            track_border = (30, 64, 175, 120)
         elif is_neg:
             bg, bd, tx = red_bg, red_bd, red_tx
             up_arrow = False
+            track = (159, 18, 57, 70)
+            track_border = (159, 18, 57, 120)
         else:
             bg, bd, tx = neutral_bg, neutral_bd, neutral_tx
             up_arrow = True
+            track = (15, 23, 42, 45)
+            track_border = (15, 23, 42, 70)
 
         draw_rounded_rect(draw, x, y, card_w, card_h, 22, fill=bg, outline=bd, width=2)
 
         # badge rank
         rank_w = 44
         draw_rounded_rect(draw, x + card_w - rank_w - 10, y + 10, rank_w, 30, 14, fill=bd, outline=None, width=0)
-        draw.text((x + card_w - 10 - rank_w / 2, y + 25), str(ix + 1),
-                  fill=(255, 255, 255, 255), font=get_font(16, True), anchor="mm")
+        draw.text(
+            (x + card_w - 10 - rank_w / 2, y + 25),
+            str(ix + 1),
+            fill=(255, 255, 255, 255),
+            font=get_font(16, True),
+            anchor="mm"
+        )
 
-        # AÇUDE: 1 linha com reticências
+        # Açude 1 linha com reticências
         name_area_w = card_w - 28 - 54
         f_name = get_font(f_name_base, True)
         nome_1linha = ellipsize_text(draw, nome.upper(), f_name, name_area_w)
-        draw.text((x + 14, y + 10), nome_1linha, fill=(15, 23, 42, 255), font=f_name)
+        draw.text((x + 14, y + 10), nome_1linha, fill=dark, font=f_name)
 
-        # MUNICÍPIO: 1 linha com reticências
+        # Município 1 linha com reticências
         f_mun = get_font(14 if big else 13, False)
         muni_text = f"Município: {municipio}"
         muni_text = ellipsize_text(draw, muni_text, f_mun, card_w - 28)
         y_mun = y + 10 + f_name.size + 2
         draw.text((x + 14, y_mun), muni_text, fill=(100, 116, 139, 255), font=f_mun)
 
-        # variação principal
+        # Variação principal
         f_var = get_font(f_var_base, True)
         arrow_x = x + 14
         arrow_y = y + (58 if big else 54)
@@ -514,14 +541,14 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
             var_txt = f"{sign}{fmt_m_2dp_dot(var_m)}"
         draw.text((x + 44, arrow_y - 2), var_txt, fill=tx, font=f_var)
 
-        # linhas
+        # Linhas
         f_line = get_font(f_line_base, False)
         l1 = f"Var. m³: {fmt_milhoes_br(var_m3, convert_raw_m3_to_millions)}"
         l2 = f"Vol: {fmt_milhoes_br(vol, convert_raw_m3_to_millions)}"
         draw.text((x + 14, y + (86 if big else 78)), l1, fill=(51, 65, 85, 255), font=f_line)
         draw.text((x + 14, y + (108 if big else 98)), l2, fill=(51, 65, 85, 255), font=f_line)
 
-        # ✅ Percentual como barra (progress bar)
+        # Percentual como barra
         pct_val = 0.0
         if not pd.isna(pct):
             try:
@@ -535,12 +562,17 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         bar_h = 10 if big else 8
         bar_y = y + card_h - (30 if big else 26)
 
-        # fundo da barra
-        draw_rounded_rect(draw, bar_x, bar_y, bar_w, bar_h, r=6, fill=(226, 232, 240, 255), outline=None, width=0)
-        # preenchimento
+        # track escuro + borda sutil
+        draw_rounded_rect(draw, bar_x, bar_y, bar_w, bar_h, r=6, fill=track, outline=track_border, width=1)
+
+        # fill
         fill_w = int(bar_w * (pct_val / 100.0))
         if fill_w > 0:
             draw_rounded_rect(draw, bar_x, bar_y, fill_w, bar_h, r=6, fill=tx, outline=None, width=0)
+
+        # brilho no topo da barra
+        shine_h = max(2, bar_h // 3)
+        draw_rounded_rect(draw, bar_x, bar_y, bar_w, shine_h, r=6, fill=(255, 255, 255, 28), outline=None, width=0)
 
         # texto do percentual
         f_pct = get_font(16 if big else 14, True)
