@@ -2,9 +2,8 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  Atualizações:
-#  - Cards positivos em AZUL
-#  - Município exibido como: "Município: <valor>"
+#  Ajuste:
+#  - KPI "Com aporte" em azul (mesma linguagem dos cards positivos)
 # =============================================================
 
 import streamlit as st
@@ -318,7 +317,7 @@ def draw_kpis_row(draw, x, y, total, up, down, big=False):
 
     w = 300 if big else 290
     o_total = (148, 163, 184, 255)
-    o_up = (34, 197, 94, 255)
+    o_up = (59, 130, 246, 255)     # azul (antes era verde)
     o_down = (244, 63, 94, 255)
 
     draw_kpi_pill(draw, x + 0*(w+gap), y, w, h, "Total", total, o_total, big)
@@ -367,10 +366,9 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
     dark = (15, 23, 42, 255)
     gray = (71, 85, 105, 255)
 
-    # POSITIVO agora AZUL
-    blue_bg = (219, 234, 254, 255)      # azul bem claro
-    blue_bd = (59, 130, 246, 255)       # azul forte
-    blue_tx = (29, 78, 216, 255)        # azul escuro
+    blue_bg = (219, 234, 254, 255)
+    blue_bd = (59, 130, 246, 255)
+    blue_tx = (29, 78, 216, 255)
 
     red_bg = (255, 241, 242, 255)
     red_bd = (251, 113, 133, 255)
@@ -504,7 +502,6 @@ def generate_image(df_all: pd.DataFrame, mode: str, date_anterior: str, date_atu
         else:
             muni_y = name_y2
 
-        # MUNICÍPIO com prefixo
         f_mun = get_font(14 if big else 13, False)
         muni_txt = f"Município: {municipio}"
         draw.text((x + 14, muni_y), muni_txt, fill=(71, 85, 105, 255), font=f_mun)
@@ -586,7 +583,7 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("Cards positivos em azul, negativos em vermelho, e município padronizado.")
+    st.caption("KPI Com aporte em azul, cards positivos em azul, município padronizado.")
     st.divider()
 
     with st.sidebar:
