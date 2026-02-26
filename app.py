@@ -2,8 +2,8 @@
 #  app.py  |  Monitoramento de Reservatórios - Card Generator
 #  GF Informática  |  Pedro Ferreira
 #
-#  Ajustes visuais
-#  - KPI em cards melhores
+#  Ajuste visual
+#  - KPI em pílulas slim (igual vibe do layout)
 #  - Subiu/Desceu => Com aporte / Sem aporte
 #  - Comparativo com data inicial -> data final
 #  - Bacia em pílula separada com retângulo
@@ -321,54 +321,54 @@ def build_bacia_label(df: pd.DataFrame) -> str:
 
 
 # -----------------------------
-# KPI melhorado
+# KPI slim estilo layout
 # -----------------------------
-def draw_kpi_card(draw, x, y, w, h, title, value, accent, big=False):
+def draw_kpi_pill(draw, x, y, w, h, label, value, outline, big=False):
     bg = (248, 250, 252, 255)
-    bd = (203, 213, 225, 255)
     text = (15, 23, 42, 255)
     sub = (71, 85, 105, 255)
 
-    r = 18 if big else 16
-    draw_rounded_rect(draw, x, y, w, h, r, fill=bg, outline=bd, width=2)
+    r = 20 if big else 18
+    draw_rounded_rect(draw, x, y, w, h, r, fill=bg, outline=outline, width=3)
 
-    # Faixa/acento no topo
-    draw_rounded_rect(draw, x + 10, y + 10, w - 20, 8, 6, fill=accent, outline=None, width=0)
+    f_lab = get_font(22 if big else 20, True)
+    f_val = get_font(30 if big else 28, True)
 
-    f_t = get_font(20 if big else 16, True)
-    f_v = get_font(38 if big else 30, True)
-
-    draw.text((x + 16, y + 22), title, fill=sub, font=f_t)
-    draw.text((x + w - 16, y + 16), str(value), fill=text, font=f_v, anchor="ra")
+    draw.text((x + 22, y + 10), label, fill=sub, font=f_lab)
+    draw.text((x + w - 22, y + 6), str(value), fill=text, font=f_val, anchor="ra")
 
 
-def draw_kpis(draw, x, y, total, up, down, big=False):
-    gap = 16
-    w = 300 if big else 280
-    h = 92 if big else 78
+def draw_kpis_row(draw, x, y, total, up, down, big=False):
+    gap = 18
+    h = 54 if big else 50
 
-    accent_total = (56, 189, 248, 255)  # azul
-    accent_up = (16, 185, 129, 255)     # verde
-    accent_down = (244, 63, 94, 255)    # vermelho
+    w = 300 if big else 290
+    o_total = (148, 163, 184, 255)
+    o_up = (34, 197, 94, 255)
+    o_down = (244, 63, 94, 255)
 
-    draw_kpi_card(draw, x + 0 * (w + gap), y, w, h, "Total", total, accent_total, big)
-    draw_kpi_card(draw, x + 1 * (w + gap), y, w, h, "Com aporte", up, accent_up, big)
-    draw_kpi_card(draw, x + 2 * (w + gap), y, w, h, "Sem aporte", down, accent_down, big)
+    draw_kpi_pill(draw, x + 0*(w+gap), y, w, h, "Total", total, o_total, big)
+    draw_kpi_pill(draw, x + 1*(w+gap), y, w, h, "Com aporte", up, o_up, big)
+    draw_kpi_pill(draw, x + 2*(w+gap), y, w, h, "Sem aporte", down, o_down, big)
 
     return y + h
 
 
-def draw_badge(draw, x, y, label, value, outline, text_color, big=False):
+def draw_bacia_pill(draw, right_x, y, text_value, big=False):
+    # pílula direita, estilo clean
+    outline = (147, 197, 253, 255)
+    bg = (255, 255, 255, 255)
+    tx = (30, 64, 175, 255)
+
     f = get_font(22 if big else 20, True)
-    pad_x = 16
-    pad_y = 10
-    text = f"{label} {value}"
-    tw = text_width(draw, text, f)
-    w = tw + pad_x * 2
-    h = (44 if big else 40)
-    draw_rounded_rect(draw, x, y, w, h, 18, fill=(255, 255, 255, 255), outline=outline, width=3)
-    draw.text((x + pad_x, y + (10 if big else 9)), text, fill=text_color, font=f)
-    return x + w + 14
+    label = f"Bacia: {text_value}"
+    w = text_width(draw, label, f) + 34
+    h = 44 if big else 40
+    x = right_x - w
+
+    draw_rounded_rect(draw, x, y, w, h, 18, fill=bg, outline=outline, width=3)
+    draw.text((x + 18, y + 9), label, fill=tx, font=f)
+    return x
 
 
 # -----------------------------
@@ -441,38 +441,28 @@ def generate_image(
         y += 92
 
     if not big:
-        y = 150
+        y = 150  # encaixe no layout do feed
 
-    # Comparativo com data inicial -> data final (como antes)
+    # Comparativo com data inicial -> data final
     comparativo = f"Comparativo  {date_anterior}  →  {date_atual}"
     draw.text((pad, y), comparativo, fill=gray, font=f_sub)
 
-    # Bacia em retângulo/pílula separada ao lado
-    bx = pad + (720 if big else 680)
-    by = y - (4 if big else 2)
+    # Bacia em pílula separada, coluna da direita
+    bacia_y = y - (4 if big else 2)
+    bacia_x = draw_bacia_pill(draw, right_x=W - pad, y=bacia_y, text_value=bacia_txt, big=big)
 
-    # se ficar apertado, joga pra linha de baixo no stories
-    if bx > W - pad - 200:
-        bx = pad
-        by = y + (50 if big else 46)
-
-    x_after = draw_badge(
-        draw,
-        bx,
-        by,
-        "Bacia:",
-        bacia_txt,
-        outline=(147, 197, 253, 255),
-        text_color=(30, 64, 175, 255),
-        big=big
-    )
+    # Se a pílula invadir o texto do comparativo, joga a bacia pra linha de baixo
+    if bacia_x < pad + 540:
+        bacia_y2 = y + (52 if big else 48)
+        draw_bacia_pill(draw, right_x=W - pad, y=bacia_y2, text_value=bacia_txt, big=big)
+        y += (52 if big else 48)
 
     y += 64 if big else 56
 
-    # KPIs melhorados
-    y = draw_kpis(draw, pad, y, total=total, up=up, down=down, big=big) + 18
+    # KPIs estilo layout
+    y = draw_kpis_row(draw, pad, y, total=total, up=up, down=down, big=big)
+    y += 20
 
-    # linha separadora
     draw.line((pad, y, W - pad, y), fill=(226, 232, 240, 255), width=3)
     y += 24
 
@@ -628,7 +618,7 @@ def main():
     )
 
     st.title("💧 Gerador de Card. Monitoramento de Reservatórios")
-    st.caption("KPIs premium + Bacia em pílula separada + comparativo com data inicial → data final.")
+    st.caption("KPIs em pílulas slim, Bacia separada e comparativo com data inicial → data final.")
     st.divider()
 
     with st.sidebar:
